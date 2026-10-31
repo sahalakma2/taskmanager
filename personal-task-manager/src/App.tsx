@@ -6,6 +6,14 @@ import {
 
 const FIREBASE_URL = 'https://mytasks-52442-default-rtdb.firebaseio.com';
 
+// Helper function to safely extract string category name from string or object
+const getCategoryName = (cat: any): string => {
+  if (!cat) return 'General';
+  if (typeof cat === 'string') return cat;
+  if (typeof cat === 'object' && cat.name) return String(cat.name);
+  return 'General';
+};
+
 interface TaskRemark {
   id: string;
   text: string;
@@ -16,7 +24,7 @@ interface Task {
   id: string;
   title: string;
   description?: string;
-  category: string;
+  category: any; // Can be string or object from DB
   task_date: string;
   status: 'pending' | 'completed';
   priority: 'High' | 'Medium' | 'Low';
@@ -56,9 +64,10 @@ export default function App() {
     try {
       const saved = localStorage.getItem('apex_categories');
       const parsed = saved ? JSON.parse(saved) : null;
-      return Array.isArray(parsed) && parsed.length > 0
-        ? parsed
-        : ['Work', 'Personal', 'Content Creation', 'Business', 'Meetings', 'Other'];
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed.map(getCategoryName);
+      }
+      return ['Work', 'Personal', 'Content Creation', 'Business', 'Meetings', 'Other'];
     } catch {
       return ['Work', 'Personal', 'Content Creation', 'Business', 'Meetings', 'Other'];
     }
@@ -128,7 +137,7 @@ export default function App() {
     }
   }, [darkMode]);
 
-  // Fetch data safely from Firebase
+  // Safe Firebase Fetch
   useEffect(() => {
     const fetchFromFirebase = async () => {
       try {
@@ -143,7 +152,7 @@ export default function App() {
             setTasks(Object.values(data.tasks));
           }
           if (Array.isArray(data.categories) && data.categories.length > 0) {
-            setCategories(data.categories);
+            setCategories(data.categories.map(getCategoryName));
           }
           setSyncStatus('Synced');
         } else {
@@ -242,7 +251,7 @@ export default function App() {
       id: 'task_' + Date.now(),
       title: taskTitle.trim(),
       description: taskDesc.trim() || undefined,
-      category: taskCategory || 'Work',
+      category: getCategoryName(taskCategory) || 'Work',
       task_date: taskDate || todayIST,
       status: 'pending',
       priority: taskPriority,
@@ -356,7 +365,7 @@ export default function App() {
     }
 
     if (selectedCategory !== 'All') {
-      list = list.filter((t) => t.category === selectedCategory);
+      list = list.filter((t) => getCategoryName(t.category) === selectedCategory);
     }
 
     if (selectedPriority !== 'All') {
@@ -556,11 +565,14 @@ export default function App() {
               className={`px-3 py-2 rounded-xl text-xs font-medium border outline-none ${darkMode ? 'bg-slate-900 border-slate-800 text-slate-300' : 'bg-white border-slate-200 text-slate-700'}`}
             >
               <option value="All">All Categories</option>
-              {categories.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
+              {categories.map((c, idx) => {
+                const name = getCategoryName(c);
+                return (
+                  <option key={idx} value={name}>
+                    {name}
+                  </option>
+                );
+              })}
             </select>
             <select
               value={selectedPriority}
@@ -584,7 +596,7 @@ export default function App() {
                 <div key={task.id} className={`p-4 rounded-xl border flex items-center justify-between ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}>
                   <div>
                     <h3 className="font-semibold text-sm line-through text-slate-400">{task.title}</h3>
-                    <span className="text-xs text-slate-400">{task.category} &bull; {task.task_date}</span>
+                    <span className="text-xs text-slate-400">{getCategoryName(task.category)} &bull; {task.task_date}</span>
                   </div>
                   <div className="flex items-center gap-2">
                     <button
@@ -650,7 +662,7 @@ export default function App() {
                             {isCompleted && <Check className="w-3.5 h-3.5" />}
                           </button>
                           <span className="text-[11px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full bg-slate-500/10">
-                            {task.category}
+                            {getCategoryName(task.category)}
                           </span>
                         </div>
                         {task.is_pinned && <Pin className="w-3.5 h-3.5 text-amber-500 fill-amber-500 shrink-0" />}
@@ -725,11 +737,14 @@ export default function App() {
                     onChange={(e) => setTaskCategory(e.target.value)}
                     className={`w-full px-3 py-2 rounded-xl border text-sm outline-none ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'}`}
                   >
-                    {categories.map((c) => (
-                      <option key={c} value={c}>
-                        {c}
-                      </option>
-                    ))}
+                    {categories.map((c, idx) => {
+                      const name = getCategoryName(c);
+                      return (
+                        <option key={idx} value={name}>
+                          {name}
+                        </option>
+                      );
+                    })}
                   </select>
                 </div>
                 <div>
@@ -807,7 +822,7 @@ export default function App() {
             <div className="flex items-start justify-between gap-3 mb-4">
               <div>
                 <span className="text-[11px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-500">
-                  {selectedTask.category}
+                  {getCategoryName(selectedTask.category)}
                 </span>
                 <h2 className="text-xl font-bold mt-2">{selectedTask.title}</h2>
                 <p className="text-xs text-slate-400 mt-0.5">Due: {selectedTask.task_date}</p>
