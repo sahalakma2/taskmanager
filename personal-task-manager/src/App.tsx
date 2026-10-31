@@ -1,12 +1,9 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   LayoutDashboard, CheckSquare, Calendar as CalendarIcon, Pin, Clock, AlertCircle,
-  FileSpreadsheet, Trash2, Settings as SettingsIcon, Plus, Search, Filter, Mic,
-  Square, Play, Pause, ChevronLeft, ChevronRight, Moon, Sun, ArrowUpDown, Volume2,
-  RefreshCw, Check, Undo2, LogOut, Lock, Download, ShieldCheck, Database
+  Trash2, Plus, Search, Mic, Square, Check, LogOut, Volume2, Sun, Moon
 } from 'lucide-react';
 
-// Hardcoded Firebase Realtime Database URL
 const FIREBASE_URL = 'https://mytasks-52442-default-rtdb.firebaseio.com';
 
 interface TaskRemark {
@@ -20,7 +17,7 @@ interface Task {
   title: string;
   description?: string;
   category: string;
-  task_date: string; // YYYY-MM-DD
+  task_date: string;
   status: 'pending' | 'completed';
   priority: 'High' | 'Medium' | 'Low';
   is_pinned: boolean;
@@ -33,104 +30,136 @@ interface Task {
 }
 
 export default function App() {
-  // Authentication & Admin setup
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
-    return localStorage.getItem('apex_auth') === 'true';
+    try {
+      return localStorage.getItem('apex_auth') === 'true';
+    } catch {
+      return false;
+    }
   });
+
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [authError, setAuthError] = useState('');
 
-  // Core Data States
   const [tasks, setTasks] = useState<Task[]>(() => {
-    const saved = localStorage.getItem('apex_tasks');
-    return saved ? JSON.parse(saved) : [];
-  });
-  const [categories, setCategories] = useState<string[]>(() => {
-    const saved = localStorage.getItem('apex_categories');
-    return saved ? JSON.parse(saved) : ['Work', 'Personal', 'Content Creation', 'Business', 'Meetings', 'Other'];
+    try {
+      const saved = localStorage.getItem('apex_tasks');
+      const parsed = saved ? JSON.parse(saved) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
   });
 
-  // UI Navigation & Filters
+  const [categories, setCategories] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('apex_categories');
+      const parsed = saved ? JSON.parse(saved) : null;
+      return Array.isArray(parsed) && parsed.length > 0
+        ? parsed
+        : ['Work', 'Personal', 'Content Creation', 'Business', 'Meetings', 'Other'];
+    } catch {
+      return ['Work', 'Personal', 'Content Creation', 'Business', 'Meetings', 'Other'];
+    }
+  });
+
   const [activeSection, setActiveSection] = useState<string>('dashboard');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [selectedPriority, setSelectedPriority] = useState<string>('All');
   const [darkMode, setDarkMode] = useState<boolean>(() => {
-    return localStorage.getItem('apex_theme') === 'dark';
+    try {
+      return localStorage.getItem('apex_theme') === 'dark';
+    } catch {
+      return false;
+    }
   });
 
-  // Task Creation & Modals
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [newRemarkText, setNewRemarkText] = useState('');
 
-  // New Task Form State
   const [taskTitle, setTaskTitle] = useState('');
   const [taskDesc, setTaskDesc] = useState('');
   const [taskCategory, setTaskCategory] = useState('Work');
   const [taskDate, setTaskDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [taskPriority, setTaskPriority] = useState<'High' | 'Medium' | 'Low'>('Medium');
   const [taskPinned, setTaskPinned] = useState(false);
-  const [taskRecurrence, setTaskRecurrence] = useState<'none' | 'daily' | 'weekly' | 'monthly'>('none');
   const [recordedAudio, setRecordedAudio] = useState<string | null>(null);
 
-  // Audio Recording State
   const [isRecording, setIsRecording] = useState(false);
   const [recordDuration, setRecordDuration] = useState(0);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<any>(null);
 
-  // Cloud Sync Notification State
   const [syncStatus, setSyncStatus] = useState<string>('Ready');
 
-  // Today string in IST (YYYY-MM-DD)
   const todayIST = useMemo(() => {
-    const d = new Date();
-    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(d);
+    try {
+      return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
+    } catch {
+      return new Date().toISOString().split('T')[0];
+    }
   }, []);
 
-  // Save to LocalStorage
   useEffect(() => {
-    localStorage.setItem('apex_tasks', JSON.stringify(tasks));
+    try {
+      localStorage.setItem('apex_tasks', JSON.stringify(tasks));
+    } catch (e) {
+      console.error(e);
+    }
   }, [tasks]);
 
   useEffect(() => {
-    localStorage.setItem('apex_categories', JSON.stringify(categories));
+    try {
+      localStorage.setItem('apex_categories', JSON.stringify(categories));
+    } catch (e) {
+      console.error(e);
+    }
   }, [categories]);
 
   useEffect(() => {
-    localStorage.setItem('apex_theme', darkMode ? 'dark' : 'light');
+    try {
+      localStorage.setItem('apex_theme', darkMode ? 'dark' : 'light');
+    } catch (e) {
+      console.error(e);
+    }
   }, [darkMode]);
 
-  // Initial Fetch from Firebase on Mount
+  // Fetch data safely from Firebase
   useEffect(() => {
     const fetchFromFirebase = async () => {
       try {
-        setSyncStatus('Syncing with Cloud...');
+        setSyncStatus('Connecting Cloud...');
         const res = await fetch(`${FIREBASE_URL}/apextask_workspace.json`);
         if (!res.ok) throw new Error('Cloud fetch failed');
         const data = await res.json();
-        if (data && data.tasks) {
-          setTasks(data.tasks);
-          if (data.categories) setCategories(data.categories);
-          setSyncStatus('Synced with Cloud');
+        if (data) {
+          if (Array.isArray(data.tasks)) {
+            setTasks(data.tasks);
+          } else if (data.tasks && typeof data.tasks === 'object') {
+            setTasks(Object.values(data.tasks));
+          }
+          if (Array.isArray(data.categories) && data.categories.length > 0) {
+            setCategories(data.categories);
+          }
+          setSyncStatus('Synced');
         } else {
           setSyncStatus('Cloud Live');
         }
       } catch (err) {
-        console.error('Firebase initial fetch error:', err);
-        setSyncStatus('Offline / Local Ready');
+        console.error('Firebase initial load error:', err);
+        setSyncStatus('Local Mode');
       }
     };
     fetchFromFirebase();
   }, []);
 
-  // Auto-save changes to Firebase Realtime Database
   const saveToFirebase = async (updatedTasks: Task[], updatedCategories: string[]) => {
     try {
-      setSyncStatus('Saving to Cloud...');
+      setSyncStatus('Saving...');
       await fetch(`${FIREBASE_URL}/apextask_workspace.json`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -140,31 +169,33 @@ export default function App() {
           last_updated: new Date().toISOString()
         })
       });
-      setSyncStatus('Saved to Cloud');
+      setSyncStatus('Synced');
     } catch (err) {
       console.error('Firebase save error:', err);
       setSyncStatus('Saved Locally');
     }
   };
 
-  // Login handler
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
     if (username.trim() === 'admin' && password === 'Admin@2026') {
       setIsAuthenticated(true);
-      localStorage.setItem('apex_auth', 'true');
+      try {
+        localStorage.setItem('apex_auth', 'true');
+      } catch (e) {}
       setAuthError('');
     } else {
-      setAuthError('Invalid Admin credentials. Use admin / Admin@2026');
+      setAuthError('Invalid Credentials. Use: admin / Admin@2026');
     }
   };
 
   const handleLogout = () => {
     setIsAuthenticated(false);
-    localStorage.removeItem('apex_auth');
+    try {
+      localStorage.removeItem('apex_auth');
+    } catch (e) {}
   };
 
-  // Recording Controls
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -188,10 +219,10 @@ export default function App() {
       setIsRecording(true);
       setRecordDuration(0);
       timerRef.current = setInterval(() => {
-        setRecordDuration(prev => prev + 1);
+        setRecordDuration((prev) => prev + 1);
       }, 1000);
-    } catch (err) {
-      alert('Microphone permission denied or not available.');
+    } catch {
+      alert('Microphone permission denied.');
     }
   };
 
@@ -203,7 +234,6 @@ export default function App() {
     }
   };
 
-  // Create Task
   const handleCreateTask = (e: React.FormEvent) => {
     e.preventDefault();
     if (!taskTitle.trim()) return;
@@ -212,15 +242,15 @@ export default function App() {
       id: 'task_' + Date.now(),
       title: taskTitle.trim(),
       description: taskDesc.trim() || undefined,
-      category: taskCategory,
-      task_date: taskDate,
+      category: taskCategory || 'Work',
+      task_date: taskDate || todayIST,
       status: 'pending',
       priority: taskPriority,
       is_pinned: taskPinned,
       is_deleted: false,
       audio_url: recordedAudio || undefined,
       remarks: [],
-      recurrence: taskRecurrence,
+      recurrence: 'none',
       created_at: new Date().toISOString()
     };
 
@@ -228,7 +258,6 @@ export default function App() {
     setTasks(nextTasks);
     saveToFirebase(nextTasks, categories);
 
-    // Reset Form
     setTaskTitle('');
     setTaskDesc('');
     setRecordedAudio(null);
@@ -236,9 +265,8 @@ export default function App() {
     setIsCreateOpen(false);
   };
 
-  // Toggle Task Completion (with recurring automation)
   const toggleComplete = (taskId: string) => {
-    const nextTasks = tasks.map(t => {
+    const nextTasks = tasks.map((t) => {
       if (t.id === taskId) {
         const isDone = t.status === 'completed';
         return {
@@ -254,7 +282,6 @@ export default function App() {
     saveToFirebase(nextTasks, categories);
   };
 
-  // Add Remark
   const handleAddRemark = (taskId: string) => {
     if (!newRemarkText.trim()) return;
     const newRemark: TaskRemark = {
@@ -263,7 +290,7 @@ export default function App() {
       created_at: new Date().toISOString()
     };
 
-    const nextTasks = tasks.map(t => {
+    const nextTasks = tasks.map((t) => {
       if (t.id === taskId) {
         return { ...t, remarks: [...(t.remarks || []), newRemark] };
       }
@@ -275,83 +302,81 @@ export default function App() {
     setNewRemarkText('');
 
     if (selectedTask && selectedTask.id === taskId) {
-      setSelectedTask(prev => prev ? { ...prev, remarks: [...(prev.remarks || []), newRemark] } : null);
+      setSelectedTask((prev) => (prev ? { ...prev, remarks: [...(prev.remarks || []), newRemark] } : null));
     }
   };
 
-  // Trash & Restore
   const moveToTrash = (taskId: string) => {
-    const nextTasks = tasks.map(t => t.id === taskId ? { ...t, is_deleted: true } : t);
+    const nextTasks = tasks.map((t) => (t.id === taskId ? { ...t, is_deleted: true } : t));
     setTasks(nextTasks);
     saveToFirebase(nextTasks, categories);
     setSelectedTask(null);
   };
 
   const restoreFromTrash = (taskId: string) => {
-    const nextTasks = tasks.map(t => t.id === taskId ? { ...t, is_deleted: false } : t);
+    const nextTasks = tasks.map((t) => (t.id === taskId ? { ...t, is_deleted: false } : t));
     setTasks(nextTasks);
     saveToFirebase(nextTasks, categories);
   };
 
   const permanentlyDelete = (taskId: string) => {
-    if (!confirm('Are you sure you want to permanently delete this task?')) return;
-    const nextTasks = tasks.filter(t => t.id !== taskId);
+    if (!confirm('Permanently delete this task?')) return;
+    const nextTasks = tasks.filter((t) => t.id !== taskId);
     setTasks(nextTasks);
     saveToFirebase(nextTasks, categories);
   };
 
-  // Filter Tasks dynamically
-  const activeTasks = useMemo(() => tasks.filter(t => !t.is_deleted), [tasks]);
-  const trashedTasks = useMemo(() => tasks.filter(t => t.is_deleted), [tasks]);
+  const safeTasks = Array.isArray(tasks) ? tasks : [];
+  const activeTasks = useMemo(() => safeTasks.filter((t) => !t.is_deleted), [safeTasks]);
+  const trashedTasks = useMemo(() => safeTasks.filter((t) => t.is_deleted), [safeTasks]);
 
   const filteredTasks = useMemo(() => {
     let list = activeTasks;
 
     if (activeSection === 'today') {
-      list = list.filter(t => t.task_date === todayIST);
+      list = list.filter((t) => t.task_date === todayIST);
     } else if (activeSection === 'upcoming') {
-      list = list.filter(t => t.task_date > todayIST);
+      list = list.filter((t) => t.task_date > todayIST);
     } else if (activeSection === 'pinned') {
-      list = list.filter(t => t.is_pinned);
+      list = list.filter((t) => t.is_pinned);
     } else if (activeSection === 'completed') {
-      list = list.filter(t => t.status === 'completed');
+      list = list.filter((t) => t.status === 'completed');
     } else if (activeSection === 'overdue') {
-      list = list.filter(t => t.status === 'pending' && t.task_date < todayIST);
+      list = list.filter((t) => t.status === 'pending' && t.task_date < todayIST);
     }
 
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
-      list = list.filter(t =>
-        t.title.toLowerCase().includes(q) ||
-        (t.description && t.description.toLowerCase().includes(q)) ||
-        (t.remarks && t.remarks.some(r => r.text.toLowerCase().includes(q)))
+      list = list.filter(
+        (t) =>
+          (t.title && t.title.toLowerCase().includes(q)) ||
+          (t.description && t.description.toLowerCase().includes(q)) ||
+          (t.remarks && t.remarks.some((r) => r.text && r.text.toLowerCase().includes(q)))
       );
     }
 
     if (selectedCategory !== 'All') {
-      list = list.filter(t => t.category === selectedCategory);
+      list = list.filter((t) => t.category === selectedCategory);
     }
 
     if (selectedPriority !== 'All') {
-      list = list.filter(t => t.priority === selectedPriority);
+      list = list.filter((t) => t.priority === selectedPriority);
     }
 
     return list;
   }, [activeTasks, activeSection, todayIST, searchQuery, selectedCategory, selectedPriority]);
 
-  // Statistics
   const stats = useMemo(() => {
     const total = activeTasks.length;
-    const today = activeTasks.filter(t => t.task_date === todayIST).length;
-    const pending = activeTasks.filter(t => t.status === 'pending').length;
-    const completed = activeTasks.filter(t => t.status === 'completed').length;
-    const overdue = activeTasks.filter(t => t.status === 'pending' && t.task_date < todayIST).length;
-    const upcoming = activeTasks.filter(t => t.task_date > todayIST).length;
+    const today = activeTasks.filter((t) => t.task_date === todayIST).length;
+    const pending = activeTasks.filter((t) => t.status === 'pending').length;
+    const completed = activeTasks.filter((t) => t.status === 'completed').length;
+    const overdue = activeTasks.filter((t) => t.status === 'pending' && t.task_date < todayIST).length;
+    const upcoming = activeTasks.filter((t) => t.task_date > todayIST).length;
     const rate = total > 0 ? Math.round((completed / total) * 100) : 0;
     return { total, today, pending, completed, overdue, upcoming, rate };
   }, [activeTasks, todayIST]);
 
-  // Login Screen
   if (!isAuthenticated) {
     return (
       <div className={`min-h-screen flex items-center justify-center p-4 ${darkMode ? 'bg-slate-900 text-white' : 'bg-slate-50 text-slate-800'}`}>
@@ -361,8 +386,8 @@ export default function App() {
               <CheckSquare className="w-6 h-6" />
             </div>
             <div>
-              <h1 className="text-xl font-bold">ApexTask Admin</h1>
-              <p className="text-xs text-slate-400">Personal Task Management</p>
+              <h1 className="text-xl font-bold">ApexTask</h1>
+              <p className="text-xs text-slate-400">Admin Login</p>
             </div>
           </div>
 
@@ -374,11 +399,11 @@ export default function App() {
 
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider mb-1 text-slate-400">Admin Username</label>
+              <label className="block text-xs font-semibold uppercase tracking-wider mb-1 text-slate-400">Username</label>
               <input
                 type="text"
                 value={username}
-                onChange={e => setUsername(e.target.value)}
+                onChange={(e) => setUsername(e.target.value)}
                 placeholder="admin"
                 className={`w-full px-4 py-2.5 rounded-lg border text-sm outline-none focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-900 border-slate-700' : 'bg-slate-50 border-slate-200'}`}
               />
@@ -388,16 +413,16 @@ export default function App() {
               <input
                 type="password"
                 value={password}
-                onChange={e => setPassword(e.target.value)}
+                onChange={(e) => setPassword(e.target.value)}
                 placeholder="Admin@2026"
                 className={`w-full px-4 py-2.5 rounded-lg border text-sm outline-none focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-900 border-slate-700' : 'bg-slate-50 border-slate-200'}`}
               />
             </div>
             <button
               type="submit"
-              className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg text-sm shadow transition"
+              className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg text-sm transition"
             >
-              Sign In as Administrator
+              Sign In
             </button>
           </form>
         </div>
@@ -407,7 +432,6 @@ export default function App() {
 
   return (
     <div className={`min-h-screen flex flex-col md:flex-row ${darkMode ? 'bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-900'}`}>
-      {/* Sidebar Navigation */}
       <aside className={`w-full md:w-64 border-r p-5 flex flex-col justify-between shrink-0 ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}>
         <div>
           <div className="flex items-center justify-between mb-8">
@@ -440,7 +464,7 @@ export default function App() {
               { id: 'completed', label: 'Completed Tasks', icon: Check, count: stats.completed },
               { id: 'overdue', label: 'Overdue Tasks', icon: AlertCircle, count: stats.overdue },
               { id: 'trash', label: 'Trash', icon: Trash2, count: trashedTasks.length }
-            ].map(item => {
+            ].map((item) => {
               const Icon = item.icon;
               const isActive = activeSection === item.id;
               return (
@@ -481,9 +505,7 @@ export default function App() {
         </div>
       </aside>
 
-      {/* Main Content Area */}
       <main className="flex-1 p-6 md:p-8 max-w-7xl mx-auto w-full overflow-y-auto">
-        {/* Top Header */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
           <div>
             <h1 className="text-2xl font-bold capitalize">{activeSection}</h1>
@@ -498,7 +520,6 @@ export default function App() {
           </button>
         </div>
 
-        {/* Dashboard Statistics Bar */}
         {activeSection === 'dashboard' && (
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-8">
             {[
@@ -517,7 +538,6 @@ export default function App() {
           </div>
         )}
 
-        {/* Filters and Search Bar */}
         <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
           <div className="relative flex-1 min-w-[240px]">
             <Search className="w-4 h-4 absolute left-3.5 top-3 text-slate-400" />
@@ -525,22 +545,26 @@ export default function App() {
               type="text"
               placeholder="Search tasks, descriptions, remarks..."
               value={searchQuery}
-              onChange={e => setSearchQuery(e.target.value)}
+              onChange={(e) => setSearchQuery(e.target.value)}
               className={`w-full pl-10 pr-4 py-2 rounded-xl text-sm border outline-none focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}
             />
           </div>
           <div className="flex items-center gap-2">
             <select
               value={selectedCategory}
-              onChange={e => setSelectedCategory(e.target.value)}
+              onChange={(e) => setSelectedCategory(e.target.value)}
               className={`px-3 py-2 rounded-xl text-xs font-medium border outline-none ${darkMode ? 'bg-slate-900 border-slate-800 text-slate-300' : 'bg-white border-slate-200 text-slate-700'}`}
             >
               <option value="All">All Categories</option>
-              {categories.map(c => <option key={c} value={c}>{c}</option>)}
+              {categories.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
             </select>
             <select
               value={selectedPriority}
-              onChange={e => setSelectedPriority(e.target.value)}
+              onChange={(e) => setSelectedPriority(e.target.value)}
               className={`px-3 py-2 rounded-xl text-xs font-medium border outline-none ${darkMode ? 'bg-slate-900 border-slate-800 text-slate-300' : 'bg-white border-slate-200 text-slate-700'}`}
             >
               <option value="All">All Priorities</option>
@@ -551,14 +575,12 @@ export default function App() {
           </div>
         </div>
 
-        {/* Task Cards Grid */}
         {activeSection === 'trash' ? (
-          /* Trash View */
           <div className="space-y-3">
             {trashedTasks.length === 0 ? (
               <p className="text-center py-12 text-slate-400 text-sm">Trash is empty.</p>
             ) : (
-              trashedTasks.map(task => (
+              trashedTasks.map((task) => (
                 <div key={task.id} className={`p-4 rounded-xl border flex items-center justify-between ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}>
                   <div>
                     <h3 className="font-semibold text-sm line-through text-slate-400">{task.title}</h3>
@@ -583,18 +605,16 @@ export default function App() {
             )}
           </div>
         ) : (
-          /* Standard Task Grid */
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {filteredTasks.length === 0 ? (
               <div className="col-span-full text-center py-16 text-slate-400">
-                <p className="text-sm">No tasks found in this section.</p>
+                <p className="text-sm">No tasks found.</p>
               </div>
             ) : (
-              filteredTasks.map(task => {
+              filteredTasks.map((task) => {
                 const isCompleted = task.status === 'completed';
                 const isOverdue = !isCompleted && task.task_date < todayIST;
 
-                // Color System: Green for completed, Red for overdue, White/Dark for pending
                 const cardStyle = isCompleted
                   ? darkMode
                     ? 'bg-emerald-950/20 border-emerald-800/40 text-emerald-200'
@@ -669,7 +689,6 @@ export default function App() {
         )}
       </main>
 
-      {/* Task Creation Modal */}
       {isCreateOpen && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className={`w-full max-w-lg p-6 rounded-2xl shadow-2xl border ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}>
@@ -681,8 +700,8 @@ export default function App() {
                   type="text"
                   required
                   value={taskTitle}
-                  onChange={e => setTaskTitle(e.target.value)}
-                  placeholder="e.g. Complete review"
+                  onChange={(e) => setTaskTitle(e.target.value)}
+                  placeholder="Task title"
                   className={`w-full px-3.5 py-2.5 rounded-xl border text-sm outline-none focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'}`}
                 />
               </div>
@@ -692,7 +711,7 @@ export default function App() {
                 <textarea
                   rows={2}
                   value={taskDesc}
-                  onChange={e => setTaskDesc(e.target.value)}
+                  onChange={(e) => setTaskDesc(e.target.value)}
                   placeholder="Task details..."
                   className={`w-full px-3.5 py-2.5 rounded-xl border text-sm outline-none focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'}`}
                 />
@@ -703,10 +722,14 @@ export default function App() {
                   <label className="block text-xs font-semibold uppercase text-slate-400 mb-1">Category</label>
                   <select
                     value={taskCategory}
-                    onChange={e => setTaskCategory(e.target.value)}
+                    onChange={(e) => setTaskCategory(e.target.value)}
                     className={`w-full px-3 py-2 rounded-xl border text-sm outline-none ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'}`}
                   >
-                    {categories.map(c => <option key={c} value={c}>{c}</option>)}
+                    {categories.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
                   </select>
                 </div>
                 <div>
@@ -715,13 +738,12 @@ export default function App() {
                     type="date"
                     required
                     value={taskDate}
-                    onChange={e => setTaskDate(e.target.value)}
+                    onChange={(e) => setTaskDate(e.target.value)}
                     className={`w-full px-3 py-2 rounded-xl border text-sm outline-none ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'}`}
                   />
                 </div>
               </div>
 
-              {/* Voice Note Recorder */}
               <div className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50">
                 <span className="block text-xs font-semibold uppercase text-slate-400 mb-2">Optional Voice Note</span>
                 <div className="flex items-center gap-3">
@@ -744,9 +766,7 @@ export default function App() {
                       <span>Stop ({recordDuration}s)</span>
                     </button>
                   )}
-                  {recordedAudio && (
-                    <audio src={recordedAudio} controls className="h-8 max-w-[200px]" />
-                  )}
+                  {recordedAudio && <audio src={recordedAudio} controls className="h-8 max-w-[200px]" />}
                 </div>
               </div>
 
@@ -755,7 +775,7 @@ export default function App() {
                   <input
                     type="checkbox"
                     checked={taskPinned}
-                    onChange={e => setTaskPinned(e.target.checked)}
+                    onChange={(e) => setTaskPinned(e.target.checked)}
                     className="w-4 h-4 rounded text-blue-600"
                   />
                   <span>Pin to Dashboard</span>
@@ -781,7 +801,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Task Details & Remarks Modal */}
       {selectedTask && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className={`w-full max-w-xl p-6 rounded-2xl shadow-2xl border ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}>
@@ -793,17 +812,12 @@ export default function App() {
                 <h2 className="text-xl font-bold mt-2">{selectedTask.title}</h2>
                 <p className="text-xs text-slate-400 mt-0.5">Due: {selectedTask.task_date}</p>
               </div>
-              <button
-                onClick={() => setSelectedTask(null)}
-                className="text-slate-400 hover:text-slate-600 text-sm font-bold"
-              >
+              <button onClick={() => setSelectedTask(null)} className="text-slate-400 hover:text-slate-600 text-sm font-bold">
                 ✕
               </button>
             </div>
 
-            {selectedTask.description && (
-              <p className="text-sm opacity-80 mb-4">{selectedTask.description}</p>
-            )}
+            {selectedTask.description && <p className="text-sm opacity-80 mb-4">{selectedTask.description}</p>}
 
             {selectedTask.audio_url && (
               <div className="mb-4 p-3 rounded-xl border border-blue-500/20 bg-blue-500/5">
@@ -812,12 +826,11 @@ export default function App() {
               </div>
             )}
 
-            {/* Remarks History */}
             <div className="border-t border-slate-200 dark:border-slate-800 pt-4 mb-4">
-              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">Remarks History</h4>
+              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">Remarks</h4>
               <div className="max-h-48 overflow-y-auto space-y-2 mb-3">
-                {(!selectedTask.remarks || selectedTask.remarks.length === 0) ? (
-                  <p className="text-xs text-slate-400">No remarks added yet.</p>
+                {!selectedTask.remarks || selectedTask.remarks.length === 0 ? (
+                  <p className="text-xs text-slate-400">No remarks yet.</p>
                 ) : (
                   selectedTask.remarks.map((r, i) => (
                     <div key={r.id || i} className="p-2.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-xs">
@@ -835,14 +848,14 @@ export default function App() {
                   type="text"
                   placeholder="Add a remark..."
                   value={newRemarkText}
-                  onChange={e => setNewRemarkText(e.target.value)}
+                  onChange={(e) => setNewRemarkText(e.target.value)}
                   className={`flex-1 px-3 py-2 rounded-xl text-xs border outline-none ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'}`}
                 />
                 <button
                   onClick={() => handleAddRemark(selectedTask.id)}
                   className="px-3 py-2 bg-blue-600 text-white rounded-xl text-xs font-medium hover:bg-blue-700"
                 >
-                  Add Remark
+                  Add
                 </button>
               </div>
             </div>
