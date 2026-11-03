@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   LayoutDashboard, CheckSquare, Calendar as CalendarIcon, Pin, Clock, AlertCircle,
-  Trash2, Plus, Search, Mic, Square, Check, LogOut, Volume2, Sun, Moon
+  Trash2, Plus, Search, Mic, Square, Check, LogOut, Volume2, Sun, Moon, DownloadCloud
 } from 'lucide-react';
 
 const FIREBASE_URL = 'https://mytasks-52442-default-rtdb.firebaseio.com';
@@ -24,7 +24,7 @@ interface Task {
   id: string;
   title: string;
   description?: string;
-  category: any; // Can be string or object from DB
+  category: any;
   task_date: string;
   status: 'pending' | 'completed';
   priority: 'High' | 'Medium' | 'Low';
@@ -105,6 +105,10 @@ export default function App() {
 
   const [syncStatus, setSyncStatus] = useState<string>('Ready');
 
+  // PWA deferred install prompt state
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [isInstallable, setIsInstallable] = useState(false);
+
   const todayIST = useMemo(() => {
     try {
       return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
@@ -112,6 +116,56 @@ export default function App() {
       return new Date().toISOString().split('T')[0];
     }
   }, []);
+
+  // Listen for beforeinstallprompt for desktop app installation
+  useEffect(() => {
+    const handleBeforeInstall = (e: Event) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+      setIsInstallable(true);
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstall);
+    return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstall);
+  }, []);
+
+  const handleInstallClick = async () => {
+    if (deferredPrompt) {
+      deferredPrompt.prompt();
+      const { outcome } = await deferredPrompt.userChoice;
+      if (outcome === 'accepted') {
+        setIsInstallable(false);
+      }
+      setDeferredPrompt(null);
+    } else {
+      alert('To install on Desktop: Click the Install icon in your browser URL bar (or menu -> Install ApexTask).');
+    }
+  };
+
+  // Keyboard shortcut listener: Press "N" to add task, "Escape" to close modal
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Do nothing if user is currently typing in an input, textarea, or select
+      const activeTag = document.activeElement?.tagName?.toLowerCase();
+      const isInputActive = activeTag === 'input' || activeTag === 'textarea' || activeTag === 'select';
+
+      if (e.key === 'Escape') {
+        setIsCreateOpen(false);
+        setSelectedTask(null);
+        return;
+      }
+
+      if ((e.key === 'n' || e.key === 'N') && !isInputActive && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (isAuthenticated) {
+          e.preventDefault();
+          setIsCreateOpen(true);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isAuthenticated]);
 
   useEffect(() => {
     try {
@@ -137,7 +191,7 @@ export default function App() {
     }
   }, [darkMode]);
 
-  // Safe Firebase Fetch
+  // Safe Firebase Fetch on load
   useEffect(() => {
     const fetchFromFirebase = async () => {
       try {
@@ -443,7 +497,7 @@ export default function App() {
     <div className={`min-h-screen flex flex-col md:flex-row ${darkMode ? 'bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-900'}`}>
       <aside className={`w-full md:w-64 border-r p-5 flex flex-col justify-between shrink-0 ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}>
         <div>
-          <div className="flex items-center justify-between mb-8">
+          <div className="flex items-center justify-between mb-6">
             <div className="flex items-center gap-3">
               <div className="w-9 h-9 rounded-xl bg-blue-600 flex items-center justify-center text-white font-bold">
                 <CheckSquare className="w-5 h-5" />
@@ -458,10 +512,24 @@ export default function App() {
             <button
               onClick={() => setDarkMode(!darkMode)}
               className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800"
+              title="Toggle Theme"
             >
               {darkMode ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-slate-600" />}
             </button>
           </div>
+
+          {/* Quick Install Web App Button */}
+          <button
+            onClick={handleInstallClick}
+            className={`w-full mb-4 flex items-center justify-center gap-2 py-2 px-3 rounded-xl text-xs font-semibold border transition ${
+              darkMode
+                ? 'bg-slate-800 border-slate-700 hover:bg-slate-700 text-slate-200'
+                : 'bg-slate-100 border-slate-200 hover:bg-slate-200 text-slate-700'
+            }`}
+          >
+            <DownloadCloud className="w-4 h-4 text-blue-500" />
+            <span>Install Desktop App</span>
+          </button>
 
           <nav className="space-y-1 text-sm font-medium">
             {[
@@ -504,6 +572,10 @@ export default function App() {
         </div>
 
         <div className="pt-6 border-t border-slate-200 dark:border-slate-800">
+          <div className="mb-3 px-3 py-1.5 rounded-lg bg-slate-500/10 text-[11px] text-slate-400 flex items-center justify-between">
+            <span>Shortcut:</span>
+            <span className="font-mono bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 px-1.5 py-0.5 rounded">N</span>
+          </div>
           <button
             onClick={handleLogout}
             className="w-full flex items-center gap-3 px-3.5 py-2 rounded-lg text-sm text-red-500 hover:bg-red-500/10 transition"
@@ -520,13 +592,16 @@ export default function App() {
             <h1 className="text-2xl font-bold capitalize">{activeSection}</h1>
             <p className="text-xs text-slate-400 mt-0.5">Asia/Kolkata (IST) &bull; {todayIST}</p>
           </div>
-          <button
-            onClick={() => setIsCreateOpen(true)}
-            className="flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-xl text-sm font-medium shadow-sm transition"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Add Task</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setIsCreateOpen(true)}
+              className="flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-xl text-sm font-medium shadow-sm transition"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Add Task</span>
+              <kbd className="hidden sm:inline-block ml-1 px-1.5 py-0.5 text-[10px] font-semibold bg-blue-700 text-blue-100 rounded border border-blue-500">N</kbd>
+            </button>
+          </div>
         </div>
 
         {activeSection === 'dashboard' && (
@@ -552,7 +627,7 @@ export default function App() {
             <Search className="w-4 h-4 absolute left-3.5 top-3 text-slate-400" />
             <input
               type="text"
-              placeholder="Search tasks, descriptions, remarks..."
+              placeholder="Search tasks, descriptions, remarks... (Press 'N' anywhere to Add)"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className={`w-full pl-10 pr-4 py-2 rounded-xl text-sm border outline-none focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}
@@ -620,7 +695,7 @@ export default function App() {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {filteredTasks.length === 0 ? (
               <div className="col-span-full text-center py-16 text-slate-400">
-                <p className="text-sm">No tasks found.</p>
+                <p className="text-sm">No tasks found. Press 'N' to add your first task.</p>
               </div>
             ) : (
               filteredTasks.map((task) => {
@@ -701,16 +776,21 @@ export default function App() {
         )}
       </main>
 
+      {/* Task Creation Modal */}
       {isCreateOpen && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className={`w-full max-w-lg p-6 rounded-2xl shadow-2xl border ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}>
-            <h2 className="text-lg font-bold mb-4">Create New Task</h2>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-bold">Create New Task</h2>
+              <span className="text-[11px] text-slate-400 font-mono">Esc to close</span>
+            </div>
             <form onSubmit={handleCreateTask} className="space-y-4">
               <div>
                 <label className="block text-xs font-semibold uppercase text-slate-400 mb-1">Title *</label>
                 <input
                   type="text"
                   required
+                  autoFocus
                   value={taskTitle}
                   onChange={(e) => setTaskTitle(e.target.value)}
                   placeholder="Task title"
@@ -816,6 +896,7 @@ export default function App() {
         </div>
       )}
 
+      {/* Task Details & Remarks Modal */}
       {selectedTask && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className={`w-full max-w-xl p-6 rounded-2xl shadow-2xl border ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}>
