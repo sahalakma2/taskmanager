@@ -1,17 +1,52 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   LayoutDashboard, CheckSquare, Calendar as CalendarIcon, Pin, Clock, AlertCircle,
-  Trash2, Plus, Search, Mic, Square, Check, LogOut, Volume2, Sun, Moon, DownloadCloud
+  Trash2, Plus, Search, Mic, Square, Check, LogOut, Volume2, Sun, Moon, DownloadCloud,
+  Sparkles
 } from 'lucide-react';
 
 const FIREBASE_URL = 'https://mytasks-52442-default-rtdb.firebaseio.com';
 
-// Helper function to safely extract string category name from string or object
 const getCategoryName = (cat: any): string => {
   if (!cat) return 'General';
   if (typeof cat === 'string') return cat;
   if (typeof cat === 'object' && cat.name) return String(cat.name);
   return 'General';
+};
+
+// Play a pleasant success chime using the Web Audio API
+const playCompletionSound = () => {
+  try {
+    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioContextClass) return;
+    const ctx = new AudioContextClass();
+    
+    // First high chime note
+    const osc1 = ctx.createOscillator();
+    const gain1 = ctx.createGain();
+    osc1.type = 'sine';
+    osc1.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
+    gain1.gain.setValueAtTime(0.12, ctx.currentTime);
+    gain1.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
+    osc1.connect(gain1);
+    gain1.connect(ctx.destination);
+    osc1.start(ctx.currentTime);
+    osc1.stop(ctx.currentTime + 0.35);
+
+    // Second harmonizing higher chime note
+    const osc2 = ctx.createOscillator();
+    const gain2 = ctx.createGain();
+    osc2.type = 'triangle';
+    osc2.frequency.setValueAtTime(880, ctx.currentTime + 0.1); // A5
+    gain2.gain.setValueAtTime(0.15, ctx.currentTime + 0.1);
+    gain2.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.6);
+    osc2.connect(gain2);
+    gain2.connect(ctx.destination);
+    osc2.start(ctx.currentTime + 0.1);
+    osc2.stop(ctx.currentTime + 0.6);
+  } catch (e) {
+    console.error('Audio play failed', e);
+  }
 };
 
 interface TaskRemark {
@@ -88,6 +123,7 @@ export default function App() {
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [newRemarkText, setNewRemarkText] = useState('');
+  const [recentlyCompletedId, setRecentlyCompletedId] = useState<string | null>(null);
 
   const [taskTitle, setTaskTitle] = useState('');
   const [taskDesc, setTaskDesc] = useState('');
@@ -104,10 +140,7 @@ export default function App() {
   const timerRef = useRef<any>(null);
 
   const [syncStatus, setSyncStatus] = useState<string>('Ready');
-
-  // PWA deferred install prompt state
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
-  const [isInstallable, setIsInstallable] = useState(false);
 
   const todayIST = useMemo(() => {
     try {
@@ -117,14 +150,12 @@ export default function App() {
     }
   }, []);
 
-  // Listen for beforeinstallprompt for desktop app installation
+  // Listen for PWA desktop install prompt
   useEffect(() => {
     const handleBeforeInstall = (e: Event) => {
       e.preventDefault();
       setDeferredPrompt(e);
-      setIsInstallable(true);
     };
-
     window.addEventListener('beforeinstallprompt', handleBeforeInstall);
     return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstall);
   }, []);
@@ -132,20 +163,16 @@ export default function App() {
   const handleInstallClick = async () => {
     if (deferredPrompt) {
       deferredPrompt.prompt();
-      const { outcome } = await deferredPrompt.userChoice;
-      if (outcome === 'accepted') {
-        setIsInstallable(false);
-      }
+      await deferredPrompt.userChoice;
       setDeferredPrompt(null);
     } else {
-      alert('To install on Desktop: Click the Install icon in your browser URL bar (or menu -> Install ApexTask).');
+      alert('To install on Desktop: Click the Install icon in your browser URL bar or menu.');
     }
   };
 
-  // Keyboard shortcut listener: Press "N" to add task, "Escape" to close modal
+  // Keyboard shortcut: Press "N" to add task, "Escape" to close
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Do nothing if user is currently typing in an input, textarea, or select
       const activeTag = document.activeElement?.tagName?.toLowerCase();
       const isInputActive = activeTag === 'input' || activeTag === 'textarea' || activeTag === 'select';
 
@@ -191,7 +218,7 @@ export default function App() {
     }
   }, [darkMode]);
 
-  // Safe Firebase Fetch on load
+  // Safe Firebase Fetch on Mount
   useEffect(() => {
     const fetchFromFirebase = async () => {
       try {
@@ -328,14 +355,23 @@ export default function App() {
     setIsCreateOpen(false);
   };
 
+  // Complete task with sound effect and move to bottom
   const toggleComplete = (taskId: string) => {
+    const task = tasks.find(t => t.id === taskId);
+    const willBeCompleted = task?.status !== 'completed';
+
+    if (willBeCompleted) {
+      playCompletionSound();
+      setRecentlyCompletedId(taskId);
+      setTimeout(() => setRecentlyCompletedId(null), 1200);
+    }
+
     const nextTasks = tasks.map((t) => {
       if (t.id === taskId) {
-        const isDone = t.status === 'completed';
         return {
           ...t,
-          status: isDone ? 'pending' : 'completed',
-          completed_at: isDone ? undefined : new Date().toISOString()
+          status: willBeCompleted ? 'completed' : 'pending',
+          completed_at: willBeCompleted ? new Date().toISOString() : undefined
         } as Task;
       }
       return t;
@@ -393,10 +429,14 @@ export default function App() {
   const activeTasks = useMemo(() => safeTasks.filter((t) => !t.is_deleted), [safeTasks]);
   const trashedTasks = useMemo(() => safeTasks.filter((t) => t.is_deleted), [safeTasks]);
 
+  // Dynamic Task Filtering & Automatic Sorting
   const filteredTasks = useMemo(() => {
     let list = activeTasks;
 
-    if (activeSection === 'today') {
+    if (activeSection === 'dashboard') {
+      // Dashboard shows: Today's Tasks + Past Pending/Overdue Tasks
+      list = list.filter((t) => t.task_date <= todayIST || t.status === 'completed');
+    } else if (activeSection === 'today') {
       list = list.filter((t) => t.task_date === todayIST);
     } else if (activeSection === 'upcoming') {
       list = list.filter((t) => t.task_date > todayIST);
@@ -426,7 +466,21 @@ export default function App() {
       list = list.filter((t) => t.priority === selectedPriority);
     }
 
-    return list;
+    // Sorting rule: Incomplete tasks stay at the top (Overdue first, then Today's),
+    // and Completed tasks automatically sink to the bottom!
+    return [...list].sort((a, b) => {
+      const aDone = a.status === 'completed' ? 1 : 0;
+      const bDone = b.status === 'completed' ? 1 : 0;
+      if (aDone !== bDone) return aDone - bDone;
+
+      // Among pending tasks, overdue tasks take priority
+      if (aDone === 0) {
+        const aOverdue = a.task_date < todayIST ? 1 : 0;
+        const bOverdue = b.task_date < todayIST ? 1 : 0;
+        if (aOverdue !== bOverdue) return bOverdue - aOverdue;
+      }
+      return b.task_date.localeCompare(a.task_date);
+    });
   }, [activeTasks, activeSection, todayIST, searchQuery, selectedCategory, selectedPriority]);
 
   const stats = useMemo(() => {
@@ -518,7 +572,6 @@ export default function App() {
             </button>
           </div>
 
-          {/* Quick Install Web App Button */}
           <button
             onClick={handleInstallClick}
             className={`w-full mb-4 flex items-center justify-center gap-2 py-2 px-3 rounded-xl text-xs font-semibold border transition ${
@@ -589,8 +642,14 @@ export default function App() {
       <main className="flex-1 p-6 md:p-8 max-w-7xl mx-auto w-full overflow-y-auto">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
           <div>
-            <h1 className="text-2xl font-bold capitalize">{activeSection}</h1>
-            <p className="text-xs text-slate-400 mt-0.5">Asia/Kolkata (IST) &bull; {todayIST}</p>
+            <h1 className="text-2xl font-bold capitalize">
+              {activeSection === 'dashboard' ? 'Daily Focus Dashboard' : activeSection}
+            </h1>
+            <p className="text-xs text-slate-400 mt-0.5">
+              {activeSection === 'dashboard'
+                ? `Prioritizing Today's Tasks & Pending Overdue Items • Asia/Kolkata (${todayIST})`
+                : `Asia/Kolkata (IST) • ${todayIST}`}
+            </p>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -608,10 +667,10 @@ export default function App() {
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-8">
             {[
               { label: 'Total Tasks', value: stats.total, color: 'text-blue-500' },
-              { label: "Today's Tasks", value: stats.today, color: 'text-indigo-500' },
+              { label: "Today's Focus", value: stats.today, color: 'text-indigo-500' },
               { label: 'Pending', value: stats.pending, color: 'text-amber-500' },
               { label: 'Completed', value: stats.completed, color: 'text-emerald-500' },
-              { label: 'Overdue', value: stats.overdue, color: 'text-rose-500' },
+              { label: 'Overdue Pending', value: stats.overdue, color: 'text-rose-500' },
               { label: 'Completion', value: `${stats.rate}%`, color: 'text-emerald-500' }
             ].map((stat, i) => (
               <div key={i} className={`p-4 rounded-xl border ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}>
@@ -627,7 +686,7 @@ export default function App() {
             <Search className="w-4 h-4 absolute left-3.5 top-3 text-slate-400" />
             <input
               type="text"
-              placeholder="Search tasks, descriptions, remarks... (Press 'N' anywhere to Add)"
+              placeholder="Search tasks, descriptions, remarks... (Press 'N' to Add)"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className={`w-full pl-10 pr-4 py-2 rounded-xl text-sm border outline-none focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}
@@ -695,21 +754,24 @@ export default function App() {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {filteredTasks.length === 0 ? (
               <div className="col-span-full text-center py-16 text-slate-400">
-                <p className="text-sm">No tasks found. Press 'N' to add your first task.</p>
+                <Sparkles className="w-8 h-8 mx-auto mb-2 opacity-40 text-blue-500" />
+                <p className="text-sm font-medium">No tasks right now.</p>
+                <p className="text-xs opacity-75 mt-0.5">Press 'N' on your keyboard to create a new task.</p>
               </div>
             ) : (
               filteredTasks.map((task) => {
                 const isCompleted = task.status === 'completed';
                 const isOverdue = !isCompleted && task.task_date < todayIST;
+                const isRecent = recentlyCompletedId === task.id;
 
                 const cardStyle = isCompleted
                   ? darkMode
-                    ? 'bg-emerald-950/20 border-emerald-800/40 text-emerald-200'
-                    : 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                    ? 'bg-emerald-950/20 border-emerald-800/40 text-emerald-200 opacity-75 hover:opacity-100'
+                    : 'bg-emerald-50 border-emerald-200 text-emerald-900 opacity-80 hover:opacity-100'
                   : isOverdue
                   ? darkMode
-                    ? 'bg-rose-950/20 border-rose-800/40 text-rose-200'
-                    : 'bg-rose-50 border-rose-200 text-rose-900'
+                    ? 'bg-rose-950/20 border-rose-800/40 text-rose-200 ring-1 ring-rose-500/30'
+                    : 'bg-rose-50 border-rose-200 text-rose-900 ring-1 ring-rose-400/40'
                   : darkMode
                   ? 'bg-slate-900 border-slate-800 text-slate-100'
                   : 'bg-white border-slate-200 text-slate-900';
@@ -718,7 +780,9 @@ export default function App() {
                   <div
                     key={task.id}
                     onClick={() => setSelectedTask(task)}
-                    className={`p-5 rounded-2xl border shadow-sm cursor-pointer transition hover:shadow-md flex flex-col justify-between ${cardStyle}`}
+                    className={`p-5 rounded-2xl border shadow-sm cursor-pointer transition-all duration-300 transform flex flex-col justify-between ${
+                      isRecent ? 'scale-95 ring-2 ring-emerald-500' : 'hover:-translate-y-0.5 hover:shadow-md'
+                    } ${cardStyle}`}
                   >
                     <div>
                       <div className="flex items-start justify-between gap-3 mb-2">
@@ -728,13 +792,14 @@ export default function App() {
                               e.stopPropagation();
                               toggleComplete(task.id);
                             }}
-                            className={`w-5 h-5 rounded-md flex items-center justify-center border transition ${
+                            title={isCompleted ? 'Mark as Incomplete' : 'Mark as Completed'}
+                            className={`w-6 h-6 rounded-lg flex items-center justify-center border transition-all duration-200 ${
                               isCompleted
-                                ? 'bg-emerald-600 border-emerald-600 text-white'
-                                : 'border-slate-300 dark:border-slate-600 hover:border-blue-500'
+                                ? 'bg-emerald-600 border-emerald-600 text-white shadow-sm'
+                                : 'border-slate-300 dark:border-slate-600 hover:border-emerald-500 hover:bg-emerald-500/10'
                             }`}
                           >
-                            {isCompleted && <Check className="w-3.5 h-3.5" />}
+                            {isCompleted && <Check className="w-4 h-4 stroke-[3]" />}
                           </button>
                           <span className="text-[11px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full bg-slate-500/10">
                             {getCategoryName(task.category)}
@@ -743,7 +808,7 @@ export default function App() {
                         {task.is_pinned && <Pin className="w-3.5 h-3.5 text-amber-500 fill-amber-500 shrink-0" />}
                       </div>
 
-                      <h3 className={`font-semibold text-base mt-2 leading-snug ${isCompleted ? 'line-through opacity-70' : ''}`}>
+                      <h3 className={`font-semibold text-base mt-2 leading-snug transition-all ${isCompleted ? 'line-through opacity-70' : ''}`}>
                         {task.title}
                       </h3>
 
@@ -756,8 +821,13 @@ export default function App() {
                       <div className="flex items-center gap-2">
                         <span className="font-medium">{task.task_date}</span>
                         {isOverdue && (
-                          <span className="text-[10px] bg-rose-500 text-white px-1.5 py-0.5 rounded font-bold uppercase">
+                          <span className="text-[10px] bg-rose-500 text-white px-1.5 py-0.5 rounded font-bold uppercase animate-pulse">
                             Overdue
+                          </span>
+                        )}
+                        {isCompleted && (
+                          <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold uppercase">
+                            Done
                           </span>
                         )}
                       </div>
