@@ -355,7 +355,7 @@ export default function App() {
     setIsCreateOpen(false);
   };
 
-  // Complete task with sound effect and move to bottom
+  // Complete task with sound effect and smooth exit from dashboard
   const toggleComplete = (taskId: string) => {
     const task = tasks.find(t => t.id === taskId);
     const willBeCompleted = task?.status !== 'completed';
@@ -363,7 +363,7 @@ export default function App() {
     if (willBeCompleted) {
       playCompletionSound();
       setRecentlyCompletedId(taskId);
-      setTimeout(() => setRecentlyCompletedId(null), 1200);
+      setTimeout(() => setRecentlyCompletedId(null), 600);
     }
 
     const nextTasks = tasks.map((t) => {
@@ -434,8 +434,8 @@ export default function App() {
     let list = activeTasks;
 
     if (activeSection === 'dashboard') {
-      // Dashboard shows: Today's Tasks + Past Pending/Overdue Tasks
-      list = list.filter((t) => t.task_date <= todayIST || t.status === 'completed');
+      // Dashboard shows ONLY Today's Pending Tasks + Past Pending/Overdue Tasks (Excludes completed tasks)
+      list = list.filter((t) => (t.status === 'pending' && t.task_date <= todayIST) || t.id === recentlyCompletedId);
     } else if (activeSection === 'today') {
       list = list.filter((t) => t.task_date === todayIST);
     } else if (activeSection === 'upcoming') {
@@ -467,13 +467,12 @@ export default function App() {
     }
 
     // Sorting rule: Incomplete tasks stay at the top (Overdue first, then Today's),
-    // and Completed tasks automatically sink to the bottom!
+    // and Completed tasks automatically sink to the bottom in sections where they are visible
     return [...list].sort((a, b) => {
       const aDone = a.status === 'completed' ? 1 : 0;
       const bDone = b.status === 'completed' ? 1 : 0;
       if (aDone !== bDone) return aDone - bDone;
 
-      // Among pending tasks, overdue tasks take priority
       if (aDone === 0) {
         const aOverdue = a.task_date < todayIST ? 1 : 0;
         const bOverdue = b.task_date < todayIST ? 1 : 0;
@@ -481,7 +480,7 @@ export default function App() {
       }
       return b.task_date.localeCompare(a.task_date);
     });
-  }, [activeTasks, activeSection, todayIST, searchQuery, selectedCategory, selectedPriority]);
+  }, [activeTasks, activeSection, todayIST, searchQuery, selectedCategory, selectedPriority, recentlyCompletedId]);
 
   const stats = useMemo(() => {
     const total = activeTasks.length;
@@ -647,7 +646,7 @@ export default function App() {
             </h1>
             <p className="text-xs text-slate-400 mt-0.5">
               {activeSection === 'dashboard'
-                ? `Prioritizing Today's Tasks & Pending Overdue Items • Asia/Kolkata (${todayIST})`
+                ? `Prioritizing Today's Pending Tasks & Overdue Items • Asia/Kolkata (${todayIST})`
                 : `Asia/Kolkata (IST) • ${todayIST}`}
             </p>
           </div>
@@ -755,7 +754,7 @@ export default function App() {
             {filteredTasks.length === 0 ? (
               <div className="col-span-full text-center py-16 text-slate-400">
                 <Sparkles className="w-8 h-8 mx-auto mb-2 opacity-40 text-blue-500" />
-                <p className="text-sm font-medium">No tasks right now.</p>
+                <p className="text-sm font-medium">No pending tasks right now.</p>
                 <p className="text-xs opacity-75 mt-0.5">Press 'N' on your keyboard to create a new task.</p>
               </div>
             ) : (
@@ -781,7 +780,7 @@ export default function App() {
                     key={task.id}
                     onClick={() => setSelectedTask(task)}
                     className={`p-5 rounded-2xl border shadow-sm cursor-pointer transition-all duration-300 transform flex flex-col justify-between ${
-                      isRecent ? 'scale-95 ring-2 ring-emerald-500' : 'hover:-translate-y-0.5 hover:shadow-md'
+                      isRecent ? 'scale-95 opacity-50 ring-2 ring-emerald-500' : 'hover:-translate-y-0.5 hover:shadow-md'
                     } ${cardStyle}`}
                   >
                     <div>
