@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   LayoutDashboard, CheckSquare, Calendar as CalendarIcon, Pin, Clock, AlertCircle,
   Trash2, Plus, Search, Mic, Square, Check, LogOut, Volume2, Sun, Moon, DownloadCloud,
-  Sparkles
+  Sparkles, Star, User, Users, Play, Pause, Edit3, X
 } from 'lucide-react';
 
 const FIREBASE_URL = 'https://mytasks-52442-default-rtdb.firebaseio.com';
@@ -14,18 +14,28 @@ const getCategoryName = (cat: any): string => {
   return 'General';
 };
 
+// Calculate overdue days between task_date and todayIST (capped at 1..5 for stars)
+const getOverdueDays = (taskDate: string, todayIST: string): number => {
+  if (!taskDate || taskDate >= todayIST) return 0;
+  const [y1, m1, d1] = taskDate.split('-').map(Number);
+  const [y2, m2, d2] = todayIST.split('-').map(Number);
+  const utc1 = Date.UTC(y1, m1 - 1, d1);
+  const utc2 = Date.UTC(y2, m2 - 1, d2);
+  const diffDays = Math.floor((utc2 - utc1) / (1000 * 60 * 60 * 24));
+  return diffDays > 0 ? diffDays : 0;
+};
+
 // Play a pleasant success chime using the Web Audio API
 const playCompletionSound = () => {
   try {
     const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
     if (!AudioContextClass) return;
     const ctx = new AudioContextClass();
-    
-    // First high chime note
+
     const osc1 = ctx.createOscillator();
     const gain1 = ctx.createGain();
     osc1.type = 'sine';
-    osc1.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
+    osc1.frequency.setValueAtTime(587.33, ctx.currentTime);
     gain1.gain.setValueAtTime(0.12, ctx.currentTime);
     gain1.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
     osc1.connect(gain1);
@@ -33,11 +43,10 @@ const playCompletionSound = () => {
     osc1.start(ctx.currentTime);
     osc1.stop(ctx.currentTime + 0.35);
 
-    // Second harmonizing higher chime note
     const osc2 = ctx.createOscillator();
     const gain2 = ctx.createGain();
     osc2.type = 'triangle';
-    osc2.frequency.setValueAtTime(880, ctx.currentTime + 0.1); // A5
+    osc2.frequency.setValueAtTime(880, ctx.currentTime + 0.1);
     gain2.gain.setValueAtTime(0.15, ctx.currentTime + 0.1);
     gain2.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.6);
     osc2.connect(gain2);
@@ -67,6 +76,7 @@ interface Task {
   is_deleted: boolean;
   completed_at?: string;
   audio_url?: string;
+  assigned_to?: string;
   remarks: TaskRemark[];
   recurrence?: 'none' | 'daily' | 'weekly' | 'monthly';
   created_at: string;
@@ -108,10 +118,24 @@ export default function App() {
     }
   });
 
+  const [assignees, setAssignees] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('apex_assignees');
+      const parsed = saved ? JSON.parse(saved) : null;
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed.map(String);
+      }
+      return ['Me'];
+    } catch {
+      return ['Me'];
+    }
+  });
+
   const [activeSection, setActiveSection] = useState<string>('dashboard');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [selectedPriority, setSelectedPriority] = useState<string>('All');
+  const [selectedAssigneeFilter, setSelectedAssigneeFilter] = useState<string>('All');
   const [darkMode, setDarkMode] = useState<boolean>(() => {
     try {
       return localStorage.getItem('apex_theme') === 'dark';
@@ -120,24 +144,37 @@ export default function App() {
     }
   });
 
+  // Modals & Edit States
   const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [newRemarkText, setNewRemarkText] = useState('');
   const [recentlyCompletedId, setRecentlyCompletedId] = useState<string | null>(null);
+  const [isManageTeamOpen, setIsManageTeamOpen] = useState(false);
+  const [newAssigneeName, setNewAssigneeName] = useState('');
+  const [inlineNewAssignee, setInlineNewAssignee] = useState('');
+  const [showInlineAddAssignee, setShowInlineAddAssignee] = useState(false);
 
+  // Task Form State (used for both Create and Edit)
   const [taskTitle, setTaskTitle] = useState('');
   const [taskDesc, setTaskDesc] = useState('');
   const [taskCategory, setTaskCategory] = useState('Work');
   const [taskDate, setTaskDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [taskPriority, setTaskPriority] = useState<'High' | 'Medium' | 'Low'>('Medium');
   const [taskPinned, setTaskPinned] = useState(false);
+  const [taskAssignedTo, setTaskAssignedTo] = useState<string>('');
   const [recordedAudio, setRecordedAudio] = useState<string | null>(null);
 
+  // Voice Note Recording State
   const [isRecording, setIsRecording] = useState(false);
   const [recordDuration, setRecordDuration] = useState(0);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<any>(null);
+
+  // Direct Card Audio Player State
+  const [playingTaskId, setPlayingTaskId] = useState<string | null>(null);
+  const cardAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const [syncStatus, setSyncStatus] = useState<string>('Ready');
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
@@ -178,21 +215,23 @@ export default function App() {
 
       if (e.key === 'Escape') {
         setIsCreateOpen(false);
+        setEditingTaskId(null);
         setSelectedTask(null);
+        setIsManageTeamOpen(false);
         return;
       }
 
       if ((e.key === 'n' || e.key === 'N') && !isInputActive && !e.ctrlKey && !e.metaKey && !e.altKey) {
         if (isAuthenticated) {
           e.preventDefault();
-          setIsCreateOpen(true);
+          openCreateModal();
         }
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isAuthenticated]);
+  }, [isAuthenticated, todayIST]);
 
   useEffect(() => {
     try {
@@ -212,13 +251,21 @@ export default function App() {
 
   useEffect(() => {
     try {
+      localStorage.setItem('apex_assignees', JSON.stringify(assignees));
+    } catch (e) {
+      console.error(e);
+    }
+  }, [assignees]);
+
+  useEffect(() => {
+    try {
       localStorage.setItem('apex_theme', darkMode ? 'dark' : 'light');
     } catch (e) {
       console.error(e);
     }
   }, [darkMode]);
 
-  // Safe Firebase Fetch on Mount
+  // Safe Firebase Fetch on Mount (Preserves all existing data)
   useEffect(() => {
     const fetchFromFirebase = async () => {
       try {
@@ -235,6 +282,9 @@ export default function App() {
           if (Array.isArray(data.categories) && data.categories.length > 0) {
             setCategories(data.categories.map(getCategoryName));
           }
+          if (Array.isArray(data.assignees) && data.assignees.length > 0) {
+            setAssignees(data.assignees.map(String));
+          }
           setSyncStatus('Synced');
         } else {
           setSyncStatus('Cloud Live');
@@ -247,7 +297,11 @@ export default function App() {
     fetchFromFirebase();
   }, []);
 
-  const saveToFirebase = async (updatedTasks: Task[], updatedCategories: string[]) => {
+  const saveToFirebase = async (
+    updatedTasks: Task[],
+    updatedCategories: string[],
+    updatedAssignees: string[] = assignees
+  ) => {
     try {
       setSyncStatus('Saving...');
       await fetch(`${FIREBASE_URL}/apextask_workspace.json`, {
@@ -256,6 +310,7 @@ export default function App() {
         body: JSON.stringify({
           tasks: updatedTasks,
           categories: updatedCategories,
+          assignees: updatedAssignees,
           last_updated: new Date().toISOString()
         })
       });
@@ -284,6 +339,39 @@ export default function App() {
     try {
       localStorage.removeItem('apex_auth');
     } catch (e) {}
+  };
+
+  // Play / Stop Voice Note directly from the Task Card
+  const toggleCardAudio = (e: React.MouseEvent, task: Task) => {
+    e.stopPropagation();
+    if (!task.audio_url) return;
+
+    if (playingTaskId === task.id) {
+      if (cardAudioRef.current) {
+        cardAudioRef.current.pause();
+        cardAudioRef.current.currentTime = 0;
+      }
+      setPlayingTaskId(null);
+      return;
+    }
+
+    if (cardAudioRef.current) {
+      cardAudioRef.current.pause();
+    }
+
+    const audio = new Audio(task.audio_url);
+    cardAudioRef.current = audio;
+    setPlayingTaskId(task.id);
+
+    audio.onended = () => {
+      setPlayingTaskId(null);
+    };
+    audio.onerror = () => {
+      setPlayingTaskId(null);
+    };
+    audio.play().catch(() => {
+      setPlayingTaskId(null);
+    });
   };
 
   const startRecording = async () => {
@@ -324,40 +412,126 @@ export default function App() {
     }
   };
 
-  const handleCreateTask = (e: React.FormEvent) => {
+  const openCreateModal = () => {
+    setEditingTaskId(null);
+    setTaskTitle('');
+    setTaskDesc('');
+    setTaskCategory(categories[0] || 'Work');
+    setTaskDate(todayIST);
+    setTaskPriority('Medium');
+    setTaskPinned(false);
+    setTaskAssignedTo('');
+    setRecordedAudio(null);
+    setShowInlineAddAssignee(false);
+    setInlineNewAssignee('');
+    setIsCreateOpen(true);
+  };
+
+  const openEditModal = (task: Task, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setEditingTaskId(task.id);
+    setTaskTitle(task.title || '');
+    setTaskDesc(task.description || '');
+    setTaskCategory(getCategoryName(task.category) || 'Work');
+    setTaskDate(task.task_date || todayIST);
+    setTaskPriority(task.priority || 'Medium');
+    setTaskPinned(Boolean(task.is_pinned));
+    setTaskAssignedTo(task.assigned_to || '');
+    setRecordedAudio(task.audio_url || null);
+    setShowInlineAddAssignee(false);
+    setInlineNewAssignee('');
+    setSelectedTask(null);
+    setIsCreateOpen(true);
+  };
+
+  // Add a new person to Assignees list
+  const handleAddAssigneePerson = (nameToAdd: string, selectImmediately = false) => {
+    const clean = nameToAdd.trim();
+    if (!clean) return;
+    const exists = assignees.some((a) => a.toLowerCase() === clean.toLowerCase());
+    const nextAssignees = exists ? assignees : [...assignees, clean];
+    setAssignees(nextAssignees);
+    if (selectImmediately) {
+      setTaskAssignedTo(clean);
+    }
+    saveToFirebase(tasks, categories, nextAssignees);
+  };
+
+  const handleRemoveAssigneePerson = (nameToRemove: string) => {
+    const nextAssignees = assignees.filter((a) => a !== nameToRemove);
+    setAssignees(nextAssignees);
+    saveToFirebase(tasks, categories, nextAssignees);
+  };
+
+  const handleSaveTask = (e: React.FormEvent) => {
     e.preventDefault();
     if (!taskTitle.trim()) return;
 
-    const newTask: Task = {
-      id: 'task_' + Date.now(),
-      title: taskTitle.trim(),
-      description: taskDesc.trim() || undefined,
-      category: getCategoryName(taskCategory) || 'Work',
-      task_date: taskDate || todayIST,
-      status: 'pending',
-      priority: taskPriority,
-      is_pinned: taskPinned,
-      is_deleted: false,
-      audio_url: recordedAudio || undefined,
-      remarks: [],
-      recurrence: 'none',
-      created_at: new Date().toISOString()
-    };
+    // If user typed a new assignee inline but didn't click Add yet, save it automatically
+    let finalAssignedTo = taskAssignedTo.trim();
+    if (showInlineAddAssignee && inlineNewAssignee.trim()) {
+      finalAssignedTo = inlineNewAssignee.trim();
+      const exists = assignees.some((a) => a.toLowerCase() === finalAssignedTo.toLowerCase());
+      if (!exists) {
+        const updatedList = [...assignees, finalAssignedTo];
+        setAssignees(updatedList);
+      }
+    }
 
-    const nextTasks = [newTask, ...tasks];
-    setTasks(nextTasks);
-    saveToFirebase(nextTasks, categories);
+    if (editingTaskId) {
+      const nextTasks = tasks.map((t) => {
+        if (t.id === editingTaskId) {
+          return {
+            ...t,
+            title: taskTitle.trim(),
+            description: taskDesc.trim() || undefined,
+            category: getCategoryName(taskCategory) || 'Work',
+            task_date: taskDate || todayIST,
+            priority: taskPriority,
+            is_pinned: taskPinned,
+            assigned_to: finalAssignedTo || undefined,
+            audio_url: recordedAudio || undefined
+          };
+        }
+        return t;
+      });
+      setTasks(nextTasks);
+      saveToFirebase(nextTasks, categories, assignees);
+    } else {
+      const newTask: Task = {
+        id: 'task_' + Date.now(),
+        title: taskTitle.trim(),
+        description: taskDesc.trim() || undefined,
+        category: getCategoryName(taskCategory) || 'Work',
+        task_date: taskDate || todayIST,
+        status: 'pending',
+        priority: taskPriority,
+        is_pinned: taskPinned,
+        is_deleted: false,
+        assigned_to: finalAssignedTo || undefined,
+        audio_url: recordedAudio || undefined,
+        remarks: [],
+        recurrence: 'none',
+        created_at: new Date().toISOString()
+      };
+
+      const nextTasks = [newTask, ...tasks];
+      setTasks(nextTasks);
+      saveToFirebase(nextTasks, categories, assignees);
+    }
 
     setTaskTitle('');
     setTaskDesc('');
     setRecordedAudio(null);
     setTaskPinned(false);
+    setTaskAssignedTo('');
+    setEditingTaskId(null);
     setIsCreateOpen(false);
   };
 
   // Complete task with sound effect and smooth exit from dashboard
   const toggleComplete = (taskId: string) => {
-    const task = tasks.find(t => t.id === taskId);
+    const task = tasks.find((t) => t.id === taskId);
     const willBeCompleted = task?.status !== 'completed';
 
     if (willBeCompleted) {
@@ -378,7 +552,7 @@ export default function App() {
     });
 
     setTasks(nextTasks);
-    saveToFirebase(nextTasks, categories);
+    saveToFirebase(nextTasks, categories, assignees);
   };
 
   const handleAddRemark = (taskId: string) => {
@@ -397,7 +571,7 @@ export default function App() {
     });
 
     setTasks(nextTasks);
-    saveToFirebase(nextTasks, categories);
+    saveToFirebase(nextTasks, categories, assignees);
     setNewRemarkText('');
 
     if (selectedTask && selectedTask.id === taskId) {
@@ -408,26 +582,37 @@ export default function App() {
   const moveToTrash = (taskId: string) => {
     const nextTasks = tasks.map((t) => (t.id === taskId ? { ...t, is_deleted: true } : t));
     setTasks(nextTasks);
-    saveToFirebase(nextTasks, categories);
+    saveToFirebase(nextTasks, categories, assignees);
     setSelectedTask(null);
   };
 
   const restoreFromTrash = (taskId: string) => {
     const nextTasks = tasks.map((t) => (t.id === taskId ? { ...t, is_deleted: false } : t));
     setTasks(nextTasks);
-    saveToFirebase(nextTasks, categories);
+    saveToFirebase(nextTasks, categories, assignees);
   };
 
   const permanentlyDelete = (taskId: string) => {
     if (!confirm('Permanently delete this task?')) return;
     const nextTasks = tasks.filter((t) => t.id !== taskId);
     setTasks(nextTasks);
-    saveToFirebase(nextTasks, categories);
+    saveToFirebase(nextTasks, categories, assignees);
   };
 
   const safeTasks = Array.isArray(tasks) ? tasks : [];
   const activeTasks = useMemo(() => safeTasks.filter((t) => !t.is_deleted), [safeTasks]);
   const trashedTasks = useMemo(() => safeTasks.filter((t) => t.is_deleted), [safeTasks]);
+
+  // Collect all unique assignee names from both saved list and existing tasks
+  const allAssigneeOptions = useMemo(() => {
+    const set = new Set<string>(assignees);
+    activeTasks.forEach((t) => {
+      if (t.assigned_to && t.assigned_to.trim()) {
+        set.add(t.assigned_to.trim());
+      }
+    });
+    return Array.from(set);
+  }, [assignees, activeTasks]);
 
   // Dynamic Task Filtering & Automatic Sorting
   const filteredTasks = useMemo(() => {
@@ -454,6 +639,7 @@ export default function App() {
         (t) =>
           (t.title && t.title.toLowerCase().includes(q)) ||
           (t.description && t.description.toLowerCase().includes(q)) ||
+          (t.assigned_to && t.assigned_to.toLowerCase().includes(q)) ||
           (t.remarks && t.remarks.some((r) => r.text && r.text.toLowerCase().includes(q)))
       );
     }
@@ -466,8 +652,10 @@ export default function App() {
       list = list.filter((t) => t.priority === selectedPriority);
     }
 
-    // Sorting rule: Incomplete tasks stay at the top (Overdue first, then Today's),
-    // and Completed tasks automatically sink to the bottom in sections where they are visible
+    if (selectedAssigneeFilter !== 'All') {
+      list = list.filter((t) => (t.assigned_to || '') === selectedAssigneeFilter);
+    }
+
     return [...list].sort((a, b) => {
       const aDone = a.status === 'completed' ? 1 : 0;
       const bDone = b.status === 'completed' ? 1 : 0;
@@ -480,7 +668,16 @@ export default function App() {
       }
       return b.task_date.localeCompare(a.task_date);
     });
-  }, [activeTasks, activeSection, todayIST, searchQuery, selectedCategory, selectedPriority, recentlyCompletedId]);
+  }, [
+    activeTasks,
+    activeSection,
+    todayIST,
+    searchQuery,
+    selectedCategory,
+    selectedPriority,
+    selectedAssigneeFilter,
+    recentlyCompletedId
+  ]);
 
   const stats = useMemo(() => {
     const total = activeTasks.length;
@@ -571,17 +768,31 @@ export default function App() {
             </button>
           </div>
 
-          <button
-            onClick={handleInstallClick}
-            className={`w-full mb-4 flex items-center justify-center gap-2 py-2 px-3 rounded-xl text-xs font-semibold border transition ${
-              darkMode
-                ? 'bg-slate-800 border-slate-700 hover:bg-slate-700 text-slate-200'
-                : 'bg-slate-100 border-slate-200 hover:bg-slate-200 text-slate-700'
-            }`}
-          >
-            <DownloadCloud className="w-4 h-4 text-blue-500" />
-            <span>Install Desktop App</span>
-          </button>
+          <div className="grid grid-cols-2 gap-2 mb-4">
+            <button
+              onClick={handleInstallClick}
+              className={`flex items-center justify-center gap-1.5 py-2 px-2.5 rounded-xl text-[11px] font-semibold border transition ${
+                darkMode
+                  ? 'bg-slate-800 border-slate-700 hover:bg-slate-700 text-slate-200'
+                  : 'bg-slate-100 border-slate-200 hover:bg-slate-200 text-slate-700'
+              }`}
+            >
+              <DownloadCloud className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+              <span className="truncate">Install App</span>
+            </button>
+
+            <button
+              onClick={() => setIsManageTeamOpen(true)}
+              className={`flex items-center justify-center gap-1.5 py-2 px-2.5 rounded-xl text-[11px] font-semibold border transition ${
+                darkMode
+                  ? 'bg-slate-800 border-slate-700 hover:bg-slate-700 text-slate-200'
+                  : 'bg-slate-100 border-slate-200 hover:bg-slate-200 text-slate-700'
+              }`}
+            >
+              <Users className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+              <span className="truncate">Manage Team</span>
+            </button>
+          </div>
 
           <nav className="space-y-1 text-sm font-medium">
             {[
@@ -652,7 +863,7 @@ export default function App() {
           </div>
           <div className="flex items-center gap-2">
             <button
-              onClick={() => setIsCreateOpen(true)}
+              onClick={openCreateModal}
               className="flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-xl text-sm font-medium shadow-sm transition"
             >
               <Plus className="w-4 h-4" />
@@ -685,13 +896,25 @@ export default function App() {
             <Search className="w-4 h-4 absolute left-3.5 top-3 text-slate-400" />
             <input
               type="text"
-              placeholder="Search tasks, descriptions, remarks... (Press 'N' to Add)"
+              placeholder="Search tasks, assignees, descriptions, remarks... (Press 'N' to Add)"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className={`w-full pl-10 pr-4 py-2 rounded-xl text-sm border outline-none focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}
             />
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={selectedAssigneeFilter}
+              onChange={(e) => setSelectedAssigneeFilter(e.target.value)}
+              className={`px-3 py-2 rounded-xl text-xs font-medium border outline-none ${darkMode ? 'bg-slate-900 border-slate-800 text-slate-300' : 'bg-white border-slate-200 text-slate-700'}`}
+            >
+              <option value="All">All Assignees</option>
+              {allAssigneeOptions.map((person, idx) => (
+                <option key={idx} value={person}>
+                  Assigned: {person}
+                </option>
+              ))}
+            </select>
             <select
               value={selectedCategory}
               onChange={(e) => setSelectedCategory(e.target.value)}
@@ -760,8 +983,11 @@ export default function App() {
             ) : (
               filteredTasks.map((task) => {
                 const isCompleted = task.status === 'completed';
-                const isOverdue = !isCompleted && task.task_date < todayIST;
+                const overdueDays = !isCompleted ? getOverdueDays(task.task_date, todayIST) : 0;
+                const isOverdue = overdueDays > 0;
+                const starCount = Math.min(overdueDays, 5);
                 const isRecent = recentlyCompletedId === task.id;
+                const isPlayingAudio = playingTaskId === task.id;
 
                 const cardStyle = isCompleted
                   ? darkMode
@@ -784,6 +1010,39 @@ export default function App() {
                     } ${cardStyle}`}
                   >
                     <div>
+                      {/* Top Header of Card: Overdue Stars (1-5) & Assigned To Badge */}
+                      {(isOverdue || task.assigned_to) && (
+                        <div className="flex flex-wrap items-center justify-between gap-2 mb-3 pb-2.5 border-b border-current/10">
+                          {isOverdue ? (
+                            <div
+                              className="flex items-center gap-1 bg-rose-500/15 text-rose-600 dark:text-rose-300 px-2 py-1 rounded-lg"
+                              title={`Overdue by ${overdueDays} day(s)`}
+                            >
+                              <div className="flex items-center gap-0.5">
+                                {Array.from({ length: starCount }).map((_, idx) => (
+                                  <Star
+                                    key={idx}
+                                    className="w-3.5 h-3.5 fill-amber-400 text-amber-500 drop-shadow-sm"
+                                  />
+                                ))}
+                              </div>
+                              <span className="text-[10px] font-bold uppercase ml-1">
+                                {overdueDays}d Overdue
+                              </span>
+                            </div>
+                          ) : (
+                            <div />
+                          )}
+
+                          {task.assigned_to && (
+                            <div className="flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1 rounded-full bg-indigo-500/15 text-indigo-600 dark:text-indigo-300">
+                              <User className="w-3 h-3 shrink-0" />
+                              <span className="truncate max-w-[130px]">{task.assigned_to}</span>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
                       <div className="flex items-start justify-between gap-3 mb-2">
                         <div className="flex items-center gap-2">
                           <button
@@ -804,7 +1063,17 @@ export default function App() {
                             {getCategoryName(task.category)}
                           </span>
                         </div>
-                        {task.is_pinned && <Pin className="w-3.5 h-3.5 text-amber-500 fill-amber-500 shrink-0" />}
+
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            onClick={(e) => openEditModal(task, e)}
+                            title="Edit Task"
+                            className="p-1 rounded-lg opacity-60 hover:opacity-100 hover:bg-slate-500/10 transition"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                          </button>
+                          {task.is_pinned && <Pin className="w-3.5 h-3.5 text-amber-500 fill-amber-500 shrink-0" />}
+                        </div>
                       </div>
 
                       <h3 className={`font-semibold text-base mt-2 leading-snug transition-all ${isCompleted ? 'line-through opacity-70' : ''}`}>
@@ -814,13 +1083,40 @@ export default function App() {
                       {task.description && (
                         <p className="text-xs opacity-75 mt-1 line-clamp-2">{task.description}</p>
                       )}
+
+                      {/* Direct Voice Note Play Button on Dashboard Card */}
+                      {task.audio_url && (
+                        <div className="mt-3">
+                          <button
+                            type="button"
+                            onClick={(e) => toggleCardAudio(e, task)}
+                            className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-semibold transition shadow-sm ${
+                              isPlayingAudio
+                                ? 'bg-rose-600 text-white animate-pulse'
+                                : 'bg-blue-600 hover:bg-blue-700 text-white'
+                            }`}
+                          >
+                            {isPlayingAudio ? (
+                              <>
+                                <Pause className="w-3.5 h-3.5 fill-current" />
+                                <span>Stop Voice Note</span>
+                              </>
+                            ) : (
+                              <>
+                                <Play className="w-3.5 h-3.5 fill-current" />
+                                <span>Play Voice Note</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      )}
                     </div>
 
                     <div className="mt-4 pt-3 border-t border-current/10 flex items-center justify-between text-xs opacity-80">
                       <div className="flex items-center gap-2">
                         <span className="font-medium">{task.task_date}</span>
                         {isOverdue && (
-                          <span className="text-[10px] bg-rose-500 text-white px-1.5 py-0.5 rounded font-bold uppercase animate-pulse">
+                          <span className="text-[10px] bg-rose-500 text-white px-1.5 py-0.5 rounded font-bold uppercase">
                             Overdue
                           </span>
                         )}
@@ -845,15 +1141,15 @@ export default function App() {
         )}
       </main>
 
-      {/* Task Creation Modal */}
+      {/* Task Creation & Edit Modal */}
       {isCreateOpen && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className={`w-full max-w-lg p-6 rounded-2xl shadow-2xl border ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}>
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50 overflow-y-auto">
+          <div className={`w-full max-w-lg p-6 rounded-2xl shadow-2xl border my-8 ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}>
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-bold">Create New Task</h2>
+              <h2 className="text-lg font-bold">{editingTaskId ? 'Edit Task' : 'Create New Task'}</h2>
               <span className="text-[11px] text-slate-400 font-mono">Esc to close</span>
             </div>
-            <form onSubmit={handleCreateTask} className="space-y-4">
+            <form onSubmit={handleSaveTask} className="space-y-4">
               <div>
                 <label className="block text-xs font-semibold uppercase text-slate-400 mb-1">Title *</label>
                 <input
@@ -878,7 +1174,60 @@ export default function App() {
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              {/* Assigned To Field with Quick Add Person */}
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-semibold uppercase text-slate-400">Assigned To (Optional)</label>
+                  <button
+                    type="button"
+                    onClick={() => setShowInlineAddAssignee(!showInlineAddAssignee)}
+                    className="text-xs font-semibold text-blue-500 hover:underline flex items-center gap-1"
+                  >
+                    <Plus className="w-3 h-3" />
+                    <span>{showInlineAddAssignee ? 'Select Existing' : 'Add New Person'}</span>
+                  </button>
+                </div>
+
+                {!showInlineAddAssignee ? (
+                  <select
+                    value={taskAssignedTo}
+                    onChange={(e) => setTaskAssignedTo(e.target.value)}
+                    className={`w-full px-3 py-2 rounded-xl border text-sm outline-none ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'}`}
+                  >
+                    <option value="">Unassigned</option>
+                    {allAssigneeOptions.map((person, idx) => (
+                      <option key={idx} value={person}>
+                        {person}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={inlineNewAssignee}
+                      onChange={(e) => setInlineNewAssignee(e.target.value)}
+                      placeholder="Enter person's name..."
+                      className={`flex-1 px-3.5 py-2 rounded-xl border text-sm outline-none focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'}`}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (inlineNewAssignee.trim()) {
+                          handleAddAssigneePerson(inlineNewAssignee, true);
+                          setInlineNewAssignee('');
+                          setShowInlineAddAssignee(false);
+                        }
+                      }}
+                      className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-semibold"
+                    >
+                      Add & Select
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-3 gap-3">
                 <div>
                   <label className="block text-xs font-semibold uppercase text-slate-400 mb-1">Category</label>
                   <select
@@ -897,6 +1246,18 @@ export default function App() {
                   </select>
                 </div>
                 <div>
+                  <label className="block text-xs font-semibold uppercase text-slate-400 mb-1">Priority</label>
+                  <select
+                    value={taskPriority}
+                    onChange={(e) => setTaskPriority(e.target.value as 'High' | 'Medium' | 'Low')}
+                    className={`w-full px-3 py-2 rounded-xl border text-sm outline-none ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'}`}
+                  >
+                    <option value="High">High</option>
+                    <option value="Medium">Medium</option>
+                    <option value="Low">Low</option>
+                  </select>
+                </div>
+                <div>
                   <label className="block text-xs font-semibold uppercase text-slate-400 mb-1">Task Date *</label>
                   <input
                     type="date"
@@ -909,8 +1270,19 @@ export default function App() {
               </div>
 
               <div className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50">
-                <span className="block text-xs font-semibold uppercase text-slate-400 mb-2">Optional Voice Note</span>
-                <div className="flex items-center gap-3">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="block text-xs font-semibold uppercase text-slate-400">Optional Voice Note</span>
+                  {recordedAudio && (
+                    <button
+                      type="button"
+                      onClick={() => setRecordedAudio(null)}
+                      className="text-[11px] text-rose-500 hover:underline"
+                    >
+                      Remove Audio
+                    </button>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-3">
                   {!isRecording ? (
                     <button
                       type="button"
@@ -918,7 +1290,7 @@ export default function App() {
                       className="flex items-center gap-2 px-3 py-1.5 bg-rose-500 text-white rounded-lg text-xs font-medium hover:bg-rose-600"
                     >
                       <Mic className="w-3.5 h-3.5" />
-                      <span>Record Audio</span>
+                      <span>{recordedAudio ? 'Record Again' : 'Record Audio'}</span>
                     </button>
                   ) : (
                     <button
@@ -930,7 +1302,7 @@ export default function App() {
                       <span>Stop ({recordDuration}s)</span>
                     </button>
                   )}
-                  {recordedAudio && <audio src={recordedAudio} controls className="h-8 max-w-[200px]" />}
+                  {recordedAudio && <audio src={recordedAudio} controls className="h-8 max-w-[220px]" />}
                 </div>
               </div>
 
@@ -947,7 +1319,10 @@ export default function App() {
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => setIsCreateOpen(false)}
+                    onClick={() => {
+                      setIsCreateOpen(false);
+                      setEditingTaskId(null);
+                    }}
                     className="px-4 py-2 rounded-xl text-sm font-medium border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800"
                   >
                     Cancel
@@ -956,11 +1331,88 @@ export default function App() {
                     type="submit"
                     className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-medium"
                   >
-                    Save Task
+                    {editingTaskId ? 'Update Task' : 'Save Task'}
                   </button>
                 </div>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Manage Team / Assignees Modal */}
+      {isManageTeamOpen && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className={`w-full max-w-md p-6 rounded-2xl shadow-2xl border ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}>
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <Users className="w-5 h-5 text-indigo-500" />
+                <h2 className="text-lg font-bold">Manage Assignees</h2>
+              </div>
+              <button onClick={() => setIsManageTeamOpen(false)} className="text-slate-400 hover:text-slate-600">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (newAssigneeName.trim()) {
+                  handleAddAssigneePerson(newAssigneeName);
+                  setNewAssigneeName('');
+                }
+              }}
+              className="flex gap-2 mb-4"
+            >
+              <input
+                type="text"
+                value={newAssigneeName}
+                onChange={(e) => setNewAssigneeName(e.target.value)}
+                placeholder="Add person name..."
+                className={`flex-1 px-3.5 py-2 rounded-xl border text-sm outline-none focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'}`}
+              />
+              <button
+                type="submit"
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-semibold"
+              >
+                Add Person
+              </button>
+            </form>
+
+            <div className="max-h-60 overflow-y-auto space-y-2">
+              {allAssigneeOptions.length === 0 ? (
+                <p className="text-xs text-slate-400 text-center py-4">No assignees added yet.</p>
+              ) : (
+                allAssigneeOptions.map((person, idx) => (
+                  <div
+                    key={idx}
+                    className={`flex items-center justify-between px-3.5 py-2 rounded-xl border text-sm ${
+                      darkMode ? 'bg-slate-800/60 border-slate-700' : 'bg-slate-50 border-slate-200'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <User className="w-4 h-4 text-indigo-500" />
+                      <span className="font-medium">{person}</span>
+                    </div>
+                    <button
+                      onClick={() => handleRemoveAssigneePerson(person)}
+                      className="text-xs text-rose-500 hover:underline"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="mt-5 flex justify-end">
+              <button
+                onClick={() => setIsManageTeamOpen(false)}
+                className="px-4 py-1.5 rounded-lg text-xs font-medium bg-slate-200 dark:bg-slate-800"
+              >
+                Done
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -971,15 +1423,37 @@ export default function App() {
           <div className={`w-full max-w-xl p-6 rounded-2xl shadow-2xl border ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}>
             <div className="flex items-start justify-between gap-3 mb-4">
               <div>
-                <span className="text-[11px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-500">
-                  {getCategoryName(selectedTask.category)}
-                </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-[11px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-500">
+                    {getCategoryName(selectedTask.category)}
+                  </span>
+                  {selectedTask.assigned_to && (
+                    <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-indigo-500/15 text-indigo-500">
+                      <User className="w-3 h-3" />
+                      <span>Assigned to: {selectedTask.assigned_to}</span>
+                    </span>
+                  )}
+                </div>
                 <h2 className="text-xl font-bold mt-2">{selectedTask.title}</h2>
-                <p className="text-xs text-slate-400 mt-0.5">Due: {selectedTask.task_date}</p>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Due: {selectedTask.task_date} &bull; Priority: {selectedTask.priority || 'Medium'}
+                </p>
               </div>
-              <button onClick={() => setSelectedTask(null)} className="text-slate-400 hover:text-slate-600 text-sm font-bold">
-                ✕
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={(e) => openEditModal(selectedTask, e)}
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-blue-600/10 text-blue-500 hover:bg-blue-600/20"
+                >
+                  <Edit3 className="w-3.5 h-3.5" />
+                  <span>Edit</span>
+                </button>
+                <button
+                  onClick={() => setSelectedTask(null)}
+                  className="text-slate-400 hover:text-slate-600 text-sm font-bold px-1.5"
+                >
+                  ✕
+                </button>
+              </div>
             </div>
 
             {selectedTask.description && <p className="text-sm opacity-80 mb-4">{selectedTask.description}</p>}
@@ -992,7 +1466,7 @@ export default function App() {
             )}
 
             <div className="border-t border-slate-200 dark:border-slate-800 pt-4 mb-4">
-              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">Remarks</h4>
+              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">Remarks History</h4>
               <div className="max-h-48 overflow-y-auto space-y-2 mb-3">
                 {!selectedTask.remarks || selectedTask.remarks.length === 0 ? (
                   <p className="text-xs text-slate-400">No remarks yet.</p>
@@ -1008,21 +1482,28 @@ export default function App() {
                 )}
               </div>
 
-              <div className="flex gap-2">
+              {/* Form submission allows pressing Enter key to immediately add the remark */}
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleAddRemark(selectedTask.id);
+                }}
+                className="flex gap-2"
+              >
                 <input
                   type="text"
-                  placeholder="Add a remark..."
+                  placeholder="Type a remark and press Enter..."
                   value={newRemarkText}
                   onChange={(e) => setNewRemarkText(e.target.value)}
-                  className={`flex-1 px-3 py-2 rounded-xl text-xs border outline-none ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'}`}
+                  className={`flex-1 px-3 py-2 rounded-xl text-xs border outline-none focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'}`}
                 />
                 <button
-                  onClick={() => handleAddRemark(selectedTask.id)}
-                  className="px-3 py-2 bg-blue-600 text-white rounded-xl text-xs font-medium hover:bg-blue-700"
+                  type="submit"
+                  className="px-3.5 py-2 bg-blue-600 text-white rounded-xl text-xs font-medium hover:bg-blue-700"
                 >
                   Add
                 </button>
-              </div>
+              </form>
             </div>
 
             <div className="flex items-center justify-between pt-3 border-t border-slate-200 dark:border-slate-800">
