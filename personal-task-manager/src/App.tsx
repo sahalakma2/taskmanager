@@ -14,7 +14,7 @@ const getCategoryName = (cat: any): string => {
   return 'General';
 };
 
-// Calculate overdue days between task_date and todayIST (capped at 1..5 for stars)
+// Calculate overdue days between task_date and todayIST
 const getOverdueDays = (taskDate: string, todayIST: string): number => {
   if (!taskDate || taskDate >= todayIST) return 0;
   const [y1, m1, d1] = taskDate.split('-').map(Number);
@@ -23,6 +23,64 @@ const getOverdueDays = (taskDate: string, todayIST: string): number => {
   const utc2 = Date.UTC(y2, m2 - 1, d2);
   const diffDays = Math.floor((utc2 - utc1) / (1000 * 60 * 60 * 24));
   return diffDays > 0 ? diffDays : 0;
+};
+
+// Consistent, high-contrast color palette for each team member (Assignee)
+const ASSIGNEE_PALETTES = [
+  {
+    light: 'bg-blue-100 text-blue-900 border-blue-300',
+    dark: 'bg-blue-950/90 text-blue-100 border-blue-700',
+    dot: 'bg-blue-600'
+  },
+  {
+    light: 'bg-purple-100 text-purple-900 border-purple-300',
+    dark: 'bg-purple-950/90 text-purple-100 border-purple-700',
+    dot: 'bg-purple-600'
+  },
+  {
+    light: 'bg-emerald-100 text-emerald-900 border-emerald-300',
+    dark: 'bg-emerald-950/90 text-emerald-100 border-emerald-700',
+    dot: 'bg-emerald-600'
+  },
+  {
+    light: 'bg-amber-100 text-amber-900 border-amber-300',
+    dark: 'bg-amber-950/90 text-amber-100 border-amber-700',
+    dot: 'bg-amber-600'
+  },
+  {
+    light: 'bg-fuchsia-100 text-fuchsia-900 border-fuchsia-300',
+    dark: 'bg-fuchsia-950/90 text-fuchsia-100 border-fuchsia-700',
+    dot: 'bg-fuchsia-600'
+  },
+  {
+    light: 'bg-cyan-100 text-cyan-900 border-cyan-300',
+    dark: 'bg-cyan-950/90 text-cyan-100 border-cyan-700',
+    dot: 'bg-cyan-600'
+  },
+  {
+    light: 'bg-indigo-100 text-indigo-900 border-indigo-300',
+    dark: 'bg-indigo-950/90 text-indigo-100 border-indigo-700',
+    dot: 'bg-indigo-600'
+  },
+  {
+    light: 'bg-teal-100 text-teal-900 border-teal-300',
+    dark: 'bg-teal-950/90 text-teal-100 border-teal-700',
+    dot: 'bg-teal-600'
+  }
+];
+
+const getAssigneeColor = (name: string, darkMode: boolean) => {
+  const clean = (name || '').trim().toLowerCase();
+  let hash = 0;
+  for (let i = 0; i < clean.length; i++) {
+    hash = clean.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const index = Math.abs(hash) % ASSIGNEE_PALETTES.length;
+  const palette = ASSIGNEE_PALETTES[index];
+  return {
+    badgeClass: darkMode ? palette.dark : palette.light,
+    dotClass: palette.dot
+  };
 };
 
 // Play a pleasant success chime using the Web Audio API
@@ -467,14 +525,14 @@ export default function App() {
     e.preventDefault();
     if (!taskTitle.trim()) return;
 
-    // If user typed a new assignee inline but didn't click Add yet, save it automatically
     let finalAssignedTo = taskAssignedTo.trim();
+    let updatedAssigneesList = assignees;
     if (showInlineAddAssignee && inlineNewAssignee.trim()) {
       finalAssignedTo = inlineNewAssignee.trim();
       const exists = assignees.some((a) => a.toLowerCase() === finalAssignedTo.toLowerCase());
       if (!exists) {
-        const updatedList = [...assignees, finalAssignedTo];
-        setAssignees(updatedList);
+        updatedAssigneesList = [...assignees, finalAssignedTo];
+        setAssignees(updatedAssigneesList);
       }
     }
 
@@ -496,7 +554,7 @@ export default function App() {
         return t;
       });
       setTasks(nextTasks);
-      saveToFirebase(nextTasks, categories, assignees);
+      saveToFirebase(nextTasks, categories, updatedAssigneesList);
     } else {
       const newTask: Task = {
         id: 'task_' + Date.now(),
@@ -517,7 +575,7 @@ export default function App() {
 
       const nextTasks = [newTask, ...tasks];
       setTasks(nextTasks);
-      saveToFirebase(nextTasks, categories, assignees);
+      saveToFirebase(nextTasks, categories, updatedAssigneesList);
     }
 
     setTaskTitle('');
@@ -657,16 +715,28 @@ export default function App() {
     }
 
     return [...list].sort((a, b) => {
+      // 1. Incomplete tasks always come before Completed tasks
       const aDone = a.status === 'completed' ? 1 : 0;
       const bDone = b.status === 'completed' ? 1 : 0;
       if (aDone !== bDone) return aDone - bDone;
 
       if (aDone === 0) {
-        const aOverdue = a.task_date < todayIST ? 1 : 0;
-        const bOverdue = b.task_date < todayIST ? 1 : 0;
-        if (aOverdue !== bOverdue) return bOverdue - aOverdue;
+        const aOverdueDays = getOverdueDays(a.task_date, todayIST);
+        const bOverdueDays = getOverdueDays(b.task_date, todayIST);
+
+        // 2. Overdue tasks always come before non-overdue tasks
+        const aIsOverdue = aOverdueDays > 0 ? 1 : 0;
+        const bIsOverdue = bOverdueDays > 0 ? 1 : 0;
+        if (aIsOverdue !== bIsOverdue) return bIsOverdue - aIsOverdue;
+
+        // 3. Among overdue tasks: MOST OVERDUE (highest overdue days / oldest date / 5 stars) comes FIRST!
+        if (aIsOverdue && bIsOverdue && aOverdueDays !== bOverdueDays) {
+          return bOverdueDays - aOverdueDays;
+        }
       }
-      return b.task_date.localeCompare(a.task_date);
+
+      // 4. Default fallback: sort by date
+      return a.task_date.localeCompare(b.task_date);
     });
   }, [
     activeTasks,
@@ -692,7 +762,7 @@ export default function App() {
 
   if (!isAuthenticated) {
     return (
-      <div className={`min-h-screen flex items-center justify-center p-4 ${darkMode ? 'bg-slate-900 text-white' : 'bg-slate-50 text-slate-800'}`}>
+      <div className={`min-h-screen flex items-center justify-center p-4 ${darkMode ? 'bg-slate-900 text-white' : 'bg-slate-50 text-slate-900'}`}>
         <div className={`w-full max-w-md p-8 rounded-2xl shadow-xl border ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
           <div className="flex items-center gap-3 mb-6">
             <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center text-white">
@@ -700,35 +770,35 @@ export default function App() {
             </div>
             <div>
               <h1 className="text-xl font-bold">ApexTask</h1>
-              <p className="text-xs text-slate-400">Admin Login</p>
+              <p className={`text-xs ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Admin Login</p>
             </div>
           </div>
 
           {authError && (
-            <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 text-red-500 rounded-lg text-sm">
+            <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 text-red-600 rounded-lg text-sm font-medium">
               {authError}
             </div>
           )}
 
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider mb-1 text-slate-400">Username</label>
+              <label className={`block text-xs font-semibold uppercase tracking-wider mb-1 ${darkMode ? 'text-slate-400' : 'text-slate-600'}`}>Username</label>
               <input
                 type="text"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 placeholder="admin"
-                className={`w-full px-4 py-2.5 rounded-lg border text-sm outline-none focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-900 border-slate-700' : 'bg-slate-50 border-slate-200'}`}
+                className={`w-full px-4 py-2.5 rounded-lg border text-sm outline-none focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'}`}
               />
             </div>
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider mb-1 text-slate-400">Password</label>
+              <label className={`block text-xs font-semibold uppercase tracking-wider mb-1 ${darkMode ? 'text-slate-400' : 'text-slate-600'}`}>Password</label>
               <input
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="Admin@2026"
-                className={`w-full px-4 py-2.5 rounded-lg border text-sm outline-none focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-900 border-slate-700' : 'bg-slate-50 border-slate-200'}`}
+                className={`w-full px-4 py-2.5 rounded-lg border text-sm outline-none focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'}`}
               />
             </div>
             <button
@@ -754,17 +824,17 @@ export default function App() {
               </div>
               <div>
                 <h2 className="font-bold text-base leading-tight">ApexTask</h2>
-                <span className="text-[11px] text-emerald-500 font-medium flex items-center gap-1">
+                <span className={`text-[11px] font-medium flex items-center gap-1 ${darkMode ? 'text-emerald-400' : 'text-emerald-600'}`}>
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> {syncStatus}
                 </span>
               </div>
             </div>
             <button
               onClick={() => setDarkMode(!darkMode)}
-              className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800"
+              className={`p-1.5 rounded-lg border transition ${darkMode ? 'border-slate-700 bg-slate-800 hover:bg-slate-700 text-amber-400' : 'border-slate-200 bg-slate-100 hover:bg-slate-200 text-slate-700'}`}
               title="Toggle Theme"
             >
-              {darkMode ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-slate-600" />}
+              {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             </button>
           </div>
 
@@ -774,7 +844,7 @@ export default function App() {
               className={`flex items-center justify-center gap-1.5 py-2 px-2.5 rounded-xl text-[11px] font-semibold border transition ${
                 darkMode
                   ? 'bg-slate-800 border-slate-700 hover:bg-slate-700 text-slate-200'
-                  : 'bg-slate-100 border-slate-200 hover:bg-slate-200 text-slate-700'
+                  : 'bg-slate-100 border-slate-200 hover:bg-slate-200 text-slate-800'
               }`}
             >
               <DownloadCloud className="w-3.5 h-3.5 text-blue-500 shrink-0" />
@@ -786,7 +856,7 @@ export default function App() {
               className={`flex items-center justify-center gap-1.5 py-2 px-2.5 rounded-xl text-[11px] font-semibold border transition ${
                 darkMode
                   ? 'bg-slate-800 border-slate-700 hover:bg-slate-700 text-slate-200'
-                  : 'bg-slate-100 border-slate-200 hover:bg-slate-200 text-slate-700'
+                  : 'bg-slate-100 border-slate-200 hover:bg-slate-200 text-slate-800'
               }`}
             >
               <Users className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
@@ -813,10 +883,10 @@ export default function App() {
                   onClick={() => setActiveSection(item.id)}
                   className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl transition ${
                     isActive
-                      ? 'bg-blue-600 text-white'
+                      ? 'bg-blue-600 text-white shadow-sm'
                       : darkMode
                       ? 'text-slate-300 hover:bg-slate-800'
-                      : 'text-slate-600 hover:bg-slate-100'
+                      : 'text-slate-700 hover:bg-slate-100'
                   }`}
                 >
                   <div className="flex items-center gap-3">
@@ -824,7 +894,7 @@ export default function App() {
                     <span>{item.label}</span>
                   </div>
                   {item.count !== undefined && (
-                    <span className={`text-xs px-2 py-0.5 rounded-full ${isActive ? 'bg-blue-700 text-white' : darkMode ? 'bg-slate-800 text-slate-400' : 'bg-slate-200 text-slate-600'}`}>
+                    <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${isActive ? 'bg-blue-700 text-white' : darkMode ? 'bg-slate-800 text-slate-300' : 'bg-slate-200 text-slate-700'}`}>
                       {item.count}
                     </span>
                   )}
@@ -834,14 +904,14 @@ export default function App() {
           </nav>
         </div>
 
-        <div className="pt-6 border-t border-slate-200 dark:border-slate-800">
-          <div className="mb-3 px-3 py-1.5 rounded-lg bg-slate-500/10 text-[11px] text-slate-400 flex items-center justify-between">
+        <div className={`pt-6 border-t ${darkMode ? 'border-slate-800' : 'border-slate-200'}`}>
+          <div className={`mb-3 px-3 py-1.5 rounded-lg text-[11px] flex items-center justify-between ${darkMode ? 'bg-slate-800 text-slate-300' : 'bg-slate-100 text-slate-600'}`}>
             <span>Shortcut:</span>
-            <span className="font-mono bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 px-1.5 py-0.5 rounded">N</span>
+            <span className={`font-mono px-1.5 py-0.5 rounded font-bold ${darkMode ? 'bg-slate-700 text-white' : 'bg-white text-slate-800 border border-slate-300'}`}>N</span>
           </div>
           <button
             onClick={handleLogout}
-            className="w-full flex items-center gap-3 px-3.5 py-2 rounded-lg text-sm text-red-500 hover:bg-red-500/10 transition"
+            className="w-full flex items-center gap-3 px-3.5 py-2 rounded-lg text-sm font-medium text-red-600 hover:bg-red-500/10 transition"
           >
             <LogOut className="w-4 h-4" />
             <span>Sign Out</span>
@@ -855,9 +925,9 @@ export default function App() {
             <h1 className="text-2xl font-bold capitalize">
               {activeSection === 'dashboard' ? 'Daily Focus Dashboard' : activeSection}
             </h1>
-            <p className="text-xs text-slate-400 mt-0.5">
+            <p className={`text-xs mt-0.5 ${darkMode ? 'text-slate-400' : 'text-slate-600'}`}>
               {activeSection === 'dashboard'
-                ? `Prioritizing Today's Pending Tasks & Overdue Items • Asia/Kolkata (${todayIST})`
+                ? `Prioritizing Most Overdue Tasks First & Today's Pending Items • Asia/Kolkata (${todayIST})`
                 : `Asia/Kolkata (IST) • ${todayIST}`}
             </p>
           </div>
@@ -876,15 +946,15 @@ export default function App() {
         {activeSection === 'dashboard' && (
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-8">
             {[
-              { label: 'Total Tasks', value: stats.total, color: 'text-blue-500' },
-              { label: "Today's Focus", value: stats.today, color: 'text-indigo-500' },
-              { label: 'Pending', value: stats.pending, color: 'text-amber-500' },
-              { label: 'Completed', value: stats.completed, color: 'text-emerald-500' },
-              { label: 'Overdue Pending', value: stats.overdue, color: 'text-rose-500' },
-              { label: 'Completion', value: `${stats.rate}%`, color: 'text-emerald-500' }
+              { label: 'Total Tasks', value: stats.total, color: darkMode ? 'text-blue-400' : 'text-blue-600' },
+              { label: "Today's Focus", value: stats.today, color: darkMode ? 'text-indigo-400' : 'text-indigo-600' },
+              { label: 'Pending', value: stats.pending, color: darkMode ? 'text-amber-400' : 'text-amber-600' },
+              { label: 'Completed', value: stats.completed, color: darkMode ? 'text-emerald-400' : 'text-emerald-600' },
+              { label: 'Overdue Pending', value: stats.overdue, color: darkMode ? 'text-rose-400' : 'text-rose-600' },
+              { label: 'Completion', value: `${stats.rate}%`, color: darkMode ? 'text-emerald-400' : 'text-emerald-600' }
             ].map((stat, i) => (
-              <div key={i} className={`p-4 rounded-xl border ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}>
-                <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">{stat.label}</span>
+              <div key={i} className={`p-4 rounded-xl border ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200 shadow-sm'}`}>
+                <span className={`text-[11px] font-semibold uppercase tracking-wider ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>{stat.label}</span>
                 <p className={`text-2xl font-bold mt-1 ${stat.color}`}>{stat.value}</p>
               </div>
             ))}
@@ -893,20 +963,20 @@ export default function App() {
 
         <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
           <div className="relative flex-1 min-w-[240px]">
-            <Search className="w-4 h-4 absolute left-3.5 top-3 text-slate-400" />
+            <Search className={`w-4 h-4 absolute left-3.5 top-3 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`} />
             <input
               type="text"
               placeholder="Search tasks, assignees, descriptions, remarks... (Press 'N' to Add)"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className={`w-full pl-10 pr-4 py-2 rounded-xl text-sm border outline-none focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}
+              className={`w-full pl-10 pr-4 py-2 rounded-xl text-sm border outline-none focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-900 border-slate-800 text-white placeholder-slate-400' : 'bg-white border-slate-300 text-slate-900 placeholder-slate-500'}`}
             />
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <select
               value={selectedAssigneeFilter}
               onChange={(e) => setSelectedAssigneeFilter(e.target.value)}
-              className={`px-3 py-2 rounded-xl text-xs font-medium border outline-none ${darkMode ? 'bg-slate-900 border-slate-800 text-slate-300' : 'bg-white border-slate-200 text-slate-700'}`}
+              className={`px-3 py-2 rounded-xl text-xs font-semibold border outline-none ${darkMode ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-white border-slate-300 text-slate-800'}`}
             >
               <option value="All">All Assignees</option>
               {allAssigneeOptions.map((person, idx) => (
@@ -918,7 +988,7 @@ export default function App() {
             <select
               value={selectedCategory}
               onChange={(e) => setSelectedCategory(e.target.value)}
-              className={`px-3 py-2 rounded-xl text-xs font-medium border outline-none ${darkMode ? 'bg-slate-900 border-slate-800 text-slate-300' : 'bg-white border-slate-200 text-slate-700'}`}
+              className={`px-3 py-2 rounded-xl text-xs font-semibold border outline-none ${darkMode ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-white border-slate-300 text-slate-800'}`}
             >
               <option value="All">All Categories</option>
               {categories.map((c, idx) => {
@@ -933,7 +1003,7 @@ export default function App() {
             <select
               value={selectedPriority}
               onChange={(e) => setSelectedPriority(e.target.value)}
-              className={`px-3 py-2 rounded-xl text-xs font-medium border outline-none ${darkMode ? 'bg-slate-900 border-slate-800 text-slate-300' : 'bg-white border-slate-200 text-slate-700'}`}
+              className={`px-3 py-2 rounded-xl text-xs font-semibold border outline-none ${darkMode ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-white border-slate-300 text-slate-800'}`}
             >
               <option value="All">All Priorities</option>
               <option value="High">High Priority</option>
@@ -946,24 +1016,24 @@ export default function App() {
         {activeSection === 'trash' ? (
           <div className="space-y-3">
             {trashedTasks.length === 0 ? (
-              <p className="text-center py-12 text-slate-400 text-sm">Trash is empty.</p>
+              <p className={`text-center py-12 text-sm ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Trash is empty.</p>
             ) : (
               trashedTasks.map((task) => (
-                <div key={task.id} className={`p-4 rounded-xl border flex items-center justify-between ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}>
+                <div key={task.id} className={`p-4 rounded-xl border flex items-center justify-between ${darkMode ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-white border-slate-200 text-slate-800'}`}>
                   <div>
-                    <h3 className="font-semibold text-sm line-through text-slate-400">{task.title}</h3>
-                    <span className="text-xs text-slate-400">{getCategoryName(task.category)} &bull; {task.task_date}</span>
+                    <h3 className={`font-semibold text-sm line-through ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>{task.title}</h3>
+                    <span className={`text-xs ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>{getCategoryName(task.category)} &bull; {task.task_date}</span>
                   </div>
                   <div className="flex items-center gap-2">
                     <button
                       onClick={() => restoreFromTrash(task.id)}
-                      className="px-3 py-1.5 bg-blue-600/10 text-blue-500 rounded-lg text-xs font-medium hover:bg-blue-600/20"
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${darkMode ? 'bg-blue-950 text-blue-300 hover:bg-blue-900' : 'bg-blue-100 text-blue-800 hover:bg-blue-200'}`}
                     >
                       Restore
                     </button>
                     <button
                       onClick={() => permanentlyDelete(task.id)}
-                      className="px-3 py-1.5 bg-red-600/10 text-red-500 rounded-lg text-xs font-medium hover:bg-red-600/20"
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${darkMode ? 'bg-red-950 text-red-300 hover:bg-red-900' : 'bg-red-100 text-red-800 hover:bg-red-200'}`}
                     >
                       Delete Forever
                     </button>
@@ -975,10 +1045,10 @@ export default function App() {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {filteredTasks.length === 0 ? (
-              <div className="col-span-full text-center py-16 text-slate-400">
-                <Sparkles className="w-8 h-8 mx-auto mb-2 opacity-40 text-blue-500" />
-                <p className="text-sm font-medium">No pending tasks right now.</p>
-                <p className="text-xs opacity-75 mt-0.5">Press 'N' on your keyboard to create a new task.</p>
+              <div className={`col-span-full text-center py-16 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                <Sparkles className="w-8 h-8 mx-auto mb-2 opacity-50 text-blue-500" />
+                <p className="text-sm font-semibold">No pending tasks right now.</p>
+                <p className="text-xs mt-0.5">Press 'N' on your keyboard to create a new task.</p>
               </div>
             ) : (
               filteredTasks.map((task) => {
@@ -991,15 +1061,17 @@ export default function App() {
 
                 const cardStyle = isCompleted
                   ? darkMode
-                    ? 'bg-emerald-950/20 border-emerald-800/40 text-emerald-200 opacity-75 hover:opacity-100'
-                    : 'bg-emerald-50 border-emerald-200 text-emerald-900 opacity-80 hover:opacity-100'
+                    ? 'bg-emerald-950/30 border-emerald-800/60 text-emerald-100 opacity-80 hover:opacity-100'
+                    : 'bg-emerald-50 border-emerald-300 text-emerald-950 opacity-90 hover:opacity-100'
                   : isOverdue
                   ? darkMode
-                    ? 'bg-rose-950/20 border-rose-800/40 text-rose-200 ring-1 ring-rose-500/30'
-                    : 'bg-rose-50 border-rose-200 text-rose-900 ring-1 ring-rose-400/40'
+                    ? 'bg-rose-950/30 border-rose-800/70 text-rose-100 ring-1 ring-rose-500/30'
+                    : 'bg-rose-50/90 border-rose-300 text-slate-900 ring-1 ring-rose-300'
                   : darkMode
                   ? 'bg-slate-900 border-slate-800 text-slate-100'
                   : 'bg-white border-slate-200 text-slate-900';
+
+                const assigneeStyle = task.assigned_to ? getAssigneeColor(task.assigned_to, darkMode) : null;
 
                 return (
                   <div
@@ -1010,23 +1082,27 @@ export default function App() {
                     } ${cardStyle}`}
                   >
                     <div>
-                      {/* Top Header of Card: Overdue Stars (1-5) & Assigned To Badge */}
+                      {/* Top Header of Card: Overdue Stars (1-5) & Consistent Color-Coded Assignee Badge */}
                       {(isOverdue || task.assigned_to) && (
-                        <div className="flex flex-wrap items-center justify-between gap-2 mb-3 pb-2.5 border-b border-current/10">
+                        <div className={`flex flex-wrap items-center justify-between gap-2 mb-3 pb-2.5 border-b ${darkMode ? 'border-slate-800' : 'border-slate-200/80'}`}>
                           {isOverdue ? (
                             <div
-                              className="flex items-center gap-1 bg-rose-500/15 text-rose-600 dark:text-rose-300 px-2 py-1 rounded-lg"
+                              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border shadow-sm ${
+                                darkMode
+                                  ? 'bg-rose-950/90 text-rose-100 border-rose-700'
+                                  : 'bg-rose-100 text-rose-900 border-rose-300'
+                              }`}
                               title={`Overdue by ${overdueDays} day(s)`}
                             >
                               <div className="flex items-center gap-0.5">
                                 {Array.from({ length: starCount }).map((_, idx) => (
                                   <Star
                                     key={idx}
-                                    className="w-3.5 h-3.5 fill-amber-400 text-amber-500 drop-shadow-sm"
+                                    className="w-3.5 h-3.5 fill-amber-400 text-amber-500 shrink-0"
                                   />
                                 ))}
                               </div>
-                              <span className="text-[10px] font-bold uppercase ml-1">
+                              <span className="text-[11px] font-extrabold uppercase tracking-tight">
                                 {overdueDays}d Overdue
                               </span>
                             </div>
@@ -1034,10 +1110,12 @@ export default function App() {
                             <div />
                           )}
 
-                          {task.assigned_to && (
-                            <div className="flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1 rounded-full bg-indigo-500/15 text-indigo-600 dark:text-indigo-300">
-                              <User className="w-3 h-3 shrink-0" />
-                              <span className="truncate max-w-[130px]">{task.assigned_to}</span>
+                          {task.assigned_to && assigneeStyle && (
+                            <div
+                              className={`flex items-center gap-1.5 text-[11px] font-bold px-2.5 py-1 rounded-full border shadow-sm ${assigneeStyle.badgeClass}`}
+                            >
+                              <span className={`w-2 h-2 rounded-full shrink-0 ${assigneeStyle.dotClass}`} />
+                              <span className="truncate max-w-[140px]">{task.assigned_to}</span>
                             </div>
                           )}
                         </div>
@@ -1054,12 +1132,20 @@ export default function App() {
                             className={`w-6 h-6 rounded-lg flex items-center justify-center border transition-all duration-200 ${
                               isCompleted
                                 ? 'bg-emerald-600 border-emerald-600 text-white shadow-sm'
-                                : 'border-slate-300 dark:border-slate-600 hover:border-emerald-500 hover:bg-emerald-500/10'
+                                : darkMode
+                                ? 'border-slate-600 bg-slate-800 hover:border-emerald-400'
+                                : 'border-slate-300 bg-white hover:border-emerald-600'
                             }`}
                           >
                             {isCompleted && <Check className="w-4 h-4 stroke-[3]" />}
                           </button>
-                          <span className="text-[11px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full bg-slate-500/10">
+                          <span
+                            className={`text-[11px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full border ${
+                              darkMode
+                                ? 'bg-slate-800 text-slate-200 border-slate-700'
+                                : 'bg-slate-100 text-slate-800 border-slate-300'
+                            }`}
+                          >
                             {getCategoryName(task.category)}
                           </span>
                         </div>
@@ -1068,7 +1154,11 @@ export default function App() {
                           <button
                             onClick={(e) => openEditModal(task, e)}
                             title="Edit Task"
-                            className="p-1 rounded-lg opacity-60 hover:opacity-100 hover:bg-slate-500/10 transition"
+                            className={`p-1.5 rounded-lg transition ${
+                              darkMode
+                                ? 'text-slate-300 hover:bg-slate-800 hover:text-white'
+                                : 'text-slate-600 hover:bg-slate-200/70 hover:text-slate-900'
+                            }`}
                           >
                             <Edit3 className="w-3.5 h-3.5" />
                           </button>
@@ -1076,12 +1166,14 @@ export default function App() {
                         </div>
                       </div>
 
-                      <h3 className={`font-semibold text-base mt-2 leading-snug transition-all ${isCompleted ? 'line-through opacity-70' : ''}`}>
+                      <h3 className={`font-bold text-base mt-2 leading-snug transition-all ${isCompleted ? 'line-through opacity-75' : ''}`}>
                         {task.title}
                       </h3>
 
                       {task.description && (
-                        <p className="text-xs opacity-75 mt-1 line-clamp-2">{task.description}</p>
+                        <p className={`text-xs mt-1 line-clamp-2 ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>
+                          {task.description}
+                        </p>
                       )}
 
                       {/* Direct Voice Note Play Button on Dashboard Card */}
@@ -1112,16 +1204,16 @@ export default function App() {
                       )}
                     </div>
 
-                    <div className="mt-4 pt-3 border-t border-current/10 flex items-center justify-between text-xs opacity-80">
+                    <div className={`mt-4 pt-3 border-t flex items-center justify-between text-xs ${darkMode ? 'border-slate-800 text-slate-300' : 'border-slate-200 text-slate-700'}`}>
                       <div className="flex items-center gap-2">
-                        <span className="font-medium">{task.task_date}</span>
+                        <span className="font-semibold">{task.task_date}</span>
                         {isOverdue && (
-                          <span className="text-[10px] bg-rose-500 text-white px-1.5 py-0.5 rounded font-bold uppercase">
+                          <span className="text-[10px] bg-rose-600 text-white px-1.5 py-0.5 rounded font-bold uppercase">
                             Overdue
                           </span>
                         )}
                         {isCompleted && (
-                          <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold uppercase">
+                          <span className={`text-[10px] font-bold uppercase px-1.5 py-0.5 rounded ${darkMode ? 'bg-emerald-900 text-emerald-200' : 'bg-emerald-200 text-emerald-900'}`}>
                             Done
                           </span>
                         )}
@@ -1129,7 +1221,7 @@ export default function App() {
                       <div className="flex items-center gap-3">
                         {task.audio_url && <Volume2 className="w-3.5 h-3.5 text-blue-500" />}
                         {task.remarks && task.remarks.length > 0 && (
-                          <span className="text-[11px] font-medium">{task.remarks.length} remarks</span>
+                          <span className="text-[11px] font-semibold">{task.remarks.length} remarks</span>
                         )}
                       </div>
                     </div>
@@ -1143,15 +1235,15 @@ export default function App() {
 
       {/* Task Creation & Edit Modal */}
       {isCreateOpen && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50 overflow-y-auto">
-          <div className={`w-full max-w-lg p-6 rounded-2xl shadow-2xl border my-8 ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}>
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 overflow-y-auto">
+          <div className={`w-full max-w-lg p-6 rounded-2xl shadow-2xl border my-8 ${darkMode ? 'bg-slate-900 border-slate-800 text-slate-100' : 'bg-white border-slate-200 text-slate-900'}`}>
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-bold">{editingTaskId ? 'Edit Task' : 'Create New Task'}</h2>
-              <span className="text-[11px] text-slate-400 font-mono">Esc to close</span>
+              <span className={`text-[11px] font-mono ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Esc to close</span>
             </div>
             <form onSubmit={handleSaveTask} className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold uppercase text-slate-400 mb-1">Title *</label>
+                <label className={`block text-xs font-semibold uppercase mb-1 ${darkMode ? 'text-slate-400' : 'text-slate-600'}`}>Title *</label>
                 <input
                   type="text"
                   required
@@ -1159,29 +1251,29 @@ export default function App() {
                   value={taskTitle}
                   onChange={(e) => setTaskTitle(e.target.value)}
                   placeholder="Task title"
-                  className={`w-full px-3.5 py-2.5 rounded-xl border text-sm outline-none focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'}`}
+                  className={`w-full px-3.5 py-2.5 rounded-xl border text-sm outline-none focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-800 border-slate-700 text-white placeholder-slate-400' : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400'}`}
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-semibold uppercase text-slate-400 mb-1">Description (Optional)</label>
+                <label className={`block text-xs font-semibold uppercase mb-1 ${darkMode ? 'text-slate-400' : 'text-slate-600'}`}>Description (Optional)</label>
                 <textarea
                   rows={2}
                   value={taskDesc}
                   onChange={(e) => setTaskDesc(e.target.value)}
                   placeholder="Task details..."
-                  className={`w-full px-3.5 py-2.5 rounded-xl border text-sm outline-none focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'}`}
+                  className={`w-full px-3.5 py-2.5 rounded-xl border text-sm outline-none focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-800 border-slate-700 text-white placeholder-slate-400' : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400'}`}
                 />
               </div>
 
               {/* Assigned To Field with Quick Add Person */}
               <div>
                 <div className="flex items-center justify-between mb-1">
-                  <label className="block text-xs font-semibold uppercase text-slate-400">Assigned To (Optional)</label>
+                  <label className={`block text-xs font-semibold uppercase ${darkMode ? 'text-slate-400' : 'text-slate-600'}`}>Assigned To (Optional)</label>
                   <button
                     type="button"
                     onClick={() => setShowInlineAddAssignee(!showInlineAddAssignee)}
-                    className="text-xs font-semibold text-blue-500 hover:underline flex items-center gap-1"
+                    className="text-xs font-semibold text-blue-600 hover:underline flex items-center gap-1"
                   >
                     <Plus className="w-3 h-3" />
                     <span>{showInlineAddAssignee ? 'Select Existing' : 'Add New Person'}</span>
@@ -1192,7 +1284,7 @@ export default function App() {
                   <select
                     value={taskAssignedTo}
                     onChange={(e) => setTaskAssignedTo(e.target.value)}
-                    className={`w-full px-3 py-2 rounded-xl border text-sm outline-none ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'}`}
+                    className={`w-full px-3 py-2 rounded-xl border text-sm outline-none ${darkMode ? 'bg-slate-800 border-slate-700 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'}`}
                   >
                     <option value="">Unassigned</option>
                     {allAssigneeOptions.map((person, idx) => (
@@ -1208,7 +1300,7 @@ export default function App() {
                       value={inlineNewAssignee}
                       onChange={(e) => setInlineNewAssignee(e.target.value)}
                       placeholder="Enter person's name..."
-                      className={`flex-1 px-3.5 py-2 rounded-xl border text-sm outline-none focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'}`}
+                      className={`flex-1 px-3.5 py-2 rounded-xl border text-sm outline-none focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-800 border-slate-700 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'}`}
                     />
                     <button
                       type="button"
@@ -1229,11 +1321,11 @@ export default function App() {
 
               <div className="grid grid-cols-3 gap-3">
                 <div>
-                  <label className="block text-xs font-semibold uppercase text-slate-400 mb-1">Category</label>
+                  <label className={`block text-xs font-semibold uppercase mb-1 ${darkMode ? 'text-slate-400' : 'text-slate-600'}`}>Category</label>
                   <select
                     value={taskCategory}
                     onChange={(e) => setTaskCategory(e.target.value)}
-                    className={`w-full px-3 py-2 rounded-xl border text-sm outline-none ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'}`}
+                    className={`w-full px-3 py-2 rounded-xl border text-sm outline-none ${darkMode ? 'bg-slate-800 border-slate-700 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'}`}
                   >
                     {categories.map((c, idx) => {
                       const name = getCategoryName(c);
@@ -1246,11 +1338,11 @@ export default function App() {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs font-semibold uppercase text-slate-400 mb-1">Priority</label>
+                  <label className={`block text-xs font-semibold uppercase mb-1 ${darkMode ? 'text-slate-400' : 'text-slate-600'}`}>Priority</label>
                   <select
                     value={taskPriority}
                     onChange={(e) => setTaskPriority(e.target.value as 'High' | 'Medium' | 'Low')}
-                    className={`w-full px-3 py-2 rounded-xl border text-sm outline-none ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'}`}
+                    className={`w-full px-3 py-2 rounded-xl border text-sm outline-none ${darkMode ? 'bg-slate-800 border-slate-700 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'}`}
                   >
                     <option value="High">High</option>
                     <option value="Medium">Medium</option>
@@ -1258,25 +1350,25 @@ export default function App() {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs font-semibold uppercase text-slate-400 mb-1">Task Date *</label>
+                  <label className={`block text-xs font-semibold uppercase mb-1 ${darkMode ? 'text-slate-400' : 'text-slate-600'}`}>Task Date *</label>
                   <input
                     type="date"
                     required
                     value={taskDate}
                     onChange={(e) => setTaskDate(e.target.value)}
-                    className={`w-full px-3 py-2 rounded-xl border text-sm outline-none ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'}`}
+                    className={`w-full px-3 py-2 rounded-xl border text-sm outline-none ${darkMode ? 'bg-slate-800 border-slate-700 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'}`}
                   />
                 </div>
               </div>
 
-              <div className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50">
+              <div className={`p-3.5 rounded-xl border ${darkMode ? 'border-slate-700 bg-slate-800/60' : 'border-slate-200 bg-slate-100'}`}>
                 <div className="flex items-center justify-between mb-2">
-                  <span className="block text-xs font-semibold uppercase text-slate-400">Optional Voice Note</span>
+                  <span className={`block text-xs font-semibold uppercase ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>Optional Voice Note</span>
                   {recordedAudio && (
                     <button
                       type="button"
                       onClick={() => setRecordedAudio(null)}
-                      className="text-[11px] text-rose-500 hover:underline"
+                      className="text-[11px] font-semibold text-rose-600 hover:underline"
                     >
                       Remove Audio
                     </button>
@@ -1287,7 +1379,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={startRecording}
-                      className="flex items-center gap-2 px-3 py-1.5 bg-rose-500 text-white rounded-lg text-xs font-medium hover:bg-rose-600"
+                      className="flex items-center gap-2 px-3 py-1.5 bg-rose-600 text-white rounded-lg text-xs font-medium hover:bg-rose-700"
                     >
                       <Mic className="w-3.5 h-3.5" />
                       <span>{recordedAudio ? 'Record Again' : 'Record Audio'}</span>
@@ -1296,7 +1388,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={stopRecording}
-                      className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 text-white rounded-lg text-xs font-medium animate-pulse"
+                      className="flex items-center gap-2 px-3 py-1.5 bg-slate-900 text-white rounded-lg text-xs font-medium animate-pulse"
                     >
                       <Square className="w-3.5 h-3.5 fill-current" />
                       <span>Stop ({recordDuration}s)</span>
@@ -1307,7 +1399,7 @@ export default function App() {
               </div>
 
               <div className="flex items-center justify-between pt-2">
-                <label className="flex items-center gap-2 text-xs font-medium cursor-pointer">
+                <label className="flex items-center gap-2 text-xs font-semibold cursor-pointer">
                   <input
                     type="checkbox"
                     checked={taskPinned}
@@ -1323,7 +1415,7 @@ export default function App() {
                       setIsCreateOpen(false);
                       setEditingTaskId(null);
                     }}
-                    className="px-4 py-2 rounded-xl text-sm font-medium border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800"
+                    className={`px-4 py-2 rounded-xl text-sm font-medium border transition ${darkMode ? 'border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-200' : 'border-slate-300 bg-slate-100 hover:bg-slate-200 text-slate-800'}`}
                   >
                     Cancel
                   </button>
@@ -1342,14 +1434,14 @@ export default function App() {
 
       {/* Manage Team / Assignees Modal */}
       {isManageTeamOpen && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className={`w-full max-w-md p-6 rounded-2xl shadow-2xl border ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}>
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className={`w-full max-w-md p-6 rounded-2xl shadow-2xl border ${darkMode ? 'bg-slate-900 border-slate-800 text-slate-100' : 'bg-white border-slate-200 text-slate-900'}`}>
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
                 <Users className="w-5 h-5 text-indigo-500" />
                 <h2 className="text-lg font-bold">Manage Assignees</h2>
               </div>
-              <button onClick={() => setIsManageTeamOpen(false)} className="text-slate-400 hover:text-slate-600">
+              <button onClick={() => setIsManageTeamOpen(false)} className={darkMode ? 'text-slate-400 hover:text-white' : 'text-slate-500 hover:text-slate-900'}>
                 <X className="w-4 h-4" />
               </button>
             </div>
@@ -1369,7 +1461,7 @@ export default function App() {
                 value={newAssigneeName}
                 onChange={(e) => setNewAssigneeName(e.target.value)}
                 placeholder="Add person name..."
-                className={`flex-1 px-3.5 py-2 rounded-xl border text-sm outline-none focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'}`}
+                className={`flex-1 px-3.5 py-2 rounded-xl border text-sm outline-none focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-800 border-slate-700 text-white placeholder-slate-400' : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400'}`}
               />
               <button
                 type="submit"
@@ -1381,34 +1473,39 @@ export default function App() {
 
             <div className="max-h-60 overflow-y-auto space-y-2">
               {allAssigneeOptions.length === 0 ? (
-                <p className="text-xs text-slate-400 text-center py-4">No assignees added yet.</p>
+                <p className={`text-xs text-center py-4 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>No assignees added yet.</p>
               ) : (
-                allAssigneeOptions.map((person, idx) => (
-                  <div
-                    key={idx}
-                    className={`flex items-center justify-between px-3.5 py-2 rounded-xl border text-sm ${
-                      darkMode ? 'bg-slate-800/60 border-slate-700' : 'bg-slate-50 border-slate-200'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <User className="w-4 h-4 text-indigo-500" />
-                      <span className="font-medium">{person}</span>
-                    </div>
-                    <button
-                      onClick={() => handleRemoveAssigneePerson(person)}
-                      className="text-xs text-rose-500 hover:underline"
+                allAssigneeOptions.map((person, idx) => {
+                  const pColor = getAssigneeColor(person, darkMode);
+                  return (
+                    <div
+                      key={idx}
+                      className={`flex items-center justify-between px-3.5 py-2 rounded-xl border text-sm ${
+                        darkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
+                      }`}
                     >
-                      Remove
-                    </button>
-                  </div>
-                ))
+                      <div className="flex items-center gap-2">
+                        <span className={`inline-flex items-center gap-1.5 text-xs font-bold px-2.5 py-1 rounded-full border ${pColor.badgeClass}`}>
+                          <span className={`w-2 h-2 rounded-full ${pColor.dotClass}`} />
+                          <span>{person}</span>
+                        </span>
+                      </div>
+                      <button
+                        onClick={() => handleRemoveAssigneePerson(person)}
+                        className="text-xs font-semibold text-rose-600 hover:underline"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  );
+                })
               )}
             </div>
 
             <div className="mt-5 flex justify-end">
               <button
                 onClick={() => setIsManageTeamOpen(false)}
-                className="px-4 py-1.5 rounded-lg text-xs font-medium bg-slate-200 dark:bg-slate-800"
+                className={`px-4 py-1.5 rounded-lg text-xs font-semibold border ${darkMode ? 'bg-slate-800 border-slate-700 text-slate-200' : 'bg-slate-100 border-slate-300 text-slate-800'}`}
               >
                 Done
               </button>
@@ -1419,62 +1516,75 @@ export default function App() {
 
       {/* Task Details & Remarks Modal */}
       {selectedTask && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className={`w-full max-w-xl p-6 rounded-2xl shadow-2xl border ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}>
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className={`w-full max-w-xl p-6 rounded-2xl shadow-2xl border ${darkMode ? 'bg-slate-900 border-slate-800 text-slate-100' : 'bg-white border-slate-200 text-slate-900'}`}>
             <div className="flex items-start justify-between gap-3 mb-4">
               <div>
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-[11px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-500">
+                  <span className={`text-[11px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full border ${darkMode ? 'bg-blue-950 text-blue-300 border-blue-800' : 'bg-blue-100 text-blue-900 border-blue-300'}`}>
                     {getCategoryName(selectedTask.category)}
                   </span>
-                  {selectedTask.assigned_to && (
-                    <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-indigo-500/15 text-indigo-500">
-                      <User className="w-3 h-3" />
-                      <span>Assigned to: {selectedTask.assigned_to}</span>
-                    </span>
-                  )}
+                  {selectedTask.assigned_to && (() => {
+                    const modalAssigneeStyle = getAssigneeColor(selectedTask.assigned_to, darkMode);
+                    return (
+                      <span className={`inline-flex items-center gap-1.5 text-[11px] font-bold px-2.5 py-0.5 rounded-full border ${modalAssigneeStyle.badgeClass}`}>
+                        <span className={`w-2 h-2 rounded-full ${modalAssigneeStyle.dotClass}`} />
+                        <span>Assigned to: {selectedTask.assigned_to}</span>
+                      </span>
+                    );
+                  })()}
                 </div>
                 <h2 className="text-xl font-bold mt-2">{selectedTask.title}</h2>
-                <p className="text-xs text-slate-400 mt-0.5">
+                <p className={`text-xs mt-0.5 font-medium ${darkMode ? 'text-slate-400' : 'text-slate-600'}`}>
                   Due: {selectedTask.task_date} &bull; Priority: {selectedTask.priority || 'Medium'}
                 </p>
               </div>
               <div className="flex items-center gap-2">
                 <button
                   onClick={(e) => openEditModal(selectedTask, e)}
-                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-blue-600/10 text-blue-500 hover:bg-blue-600/20"
+                  className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold border ${darkMode ? 'bg-blue-950 text-blue-300 border-blue-800 hover:bg-blue-900' : 'bg-blue-100 text-blue-900 border-blue-300 hover:bg-blue-200'}`}
                 >
                   <Edit3 className="w-3.5 h-3.5" />
                   <span>Edit</span>
                 </button>
                 <button
                   onClick={() => setSelectedTask(null)}
-                  className="text-slate-400 hover:text-slate-600 text-sm font-bold px-1.5"
+                  className={`text-sm font-bold px-1.5 ${darkMode ? 'text-slate-400 hover:text-white' : 'text-slate-500 hover:text-slate-900'}`}
                 >
                   ✕
                 </button>
               </div>
             </div>
 
-            {selectedTask.description && <p className="text-sm opacity-80 mb-4">{selectedTask.description}</p>}
+            {selectedTask.description && (
+              <p className={`text-sm mb-4 ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>{selectedTask.description}</p>
+            )}
 
             {selectedTask.audio_url && (
-              <div className="mb-4 p-3 rounded-xl border border-blue-500/20 bg-blue-500/5">
-                <span className="block text-xs font-semibold text-blue-500 mb-1">Attached Voice Note</span>
+              <div className={`mb-4 p-3 rounded-xl border ${darkMode ? 'border-blue-800 bg-blue-950/40' : 'border-blue-200 bg-blue-50'}`}>
+                <span className={`block text-xs font-semibold mb-1 ${darkMode ? 'text-blue-300' : 'text-blue-800'}`}>Attached Voice Note</span>
                 <audio src={selectedTask.audio_url} controls className="w-full h-8" />
               </div>
             )}
 
-            <div className="border-t border-slate-200 dark:border-slate-800 pt-4 mb-4">
-              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">Remarks History</h4>
+            {/* High-Contrast Remarks History Section */}
+            <div className={`border-t pt-4 mb-4 ${darkMode ? 'border-slate-800' : 'border-slate-200'}`}>
+              <h4 className={`text-xs font-bold uppercase tracking-wider mb-3 ${darkMode ? 'text-slate-400' : 'text-slate-600'}`}>Remarks History</h4>
               <div className="max-h-48 overflow-y-auto space-y-2 mb-3">
                 {!selectedTask.remarks || selectedTask.remarks.length === 0 ? (
-                  <p className="text-xs text-slate-400">No remarks yet.</p>
+                  <p className={`text-xs ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>No remarks yet.</p>
                 ) : (
                   selectedTask.remarks.map((r, i) => (
-                    <div key={r.id || i} className="p-2.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-xs">
-                      <p className="font-medium">{r.text}</p>
-                      <span className="text-[10px] text-slate-400 mt-1 block">
+                    <div
+                      key={r.id || i}
+                      className={`p-3 rounded-xl border text-xs ${
+                        darkMode
+                          ? 'bg-slate-800 border-slate-700 text-slate-100'
+                          : 'bg-slate-100 border-slate-300 text-slate-900'
+                      }`}
+                    >
+                      <p className="font-semibold leading-relaxed">{r.text}</p>
+                      <span className={`text-[10px] mt-1 block font-medium ${darkMode ? 'text-slate-400' : 'text-slate-600'}`}>
                         {new Date(r.created_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}
                       </span>
                     </div>
@@ -1495,28 +1605,34 @@ export default function App() {
                   placeholder="Type a remark and press Enter..."
                   value={newRemarkText}
                   onChange={(e) => setNewRemarkText(e.target.value)}
-                  className={`flex-1 px-3 py-2 rounded-xl text-xs border outline-none focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'}`}
+                  className={`flex-1 px-3.5 py-2 rounded-xl text-xs border outline-none focus:ring-2 focus:ring-blue-500 ${
+                    darkMode
+                      ? 'bg-slate-800 border-slate-700 text-white placeholder-slate-400'
+                      : 'bg-white border-slate-300 text-slate-900 placeholder-slate-500'
+                  }`}
                 />
                 <button
                   type="submit"
-                  className="px-3.5 py-2 bg-blue-600 text-white rounded-xl text-xs font-medium hover:bg-blue-700"
+                  className="px-4 py-2 bg-blue-600 text-white rounded-xl text-xs font-semibold hover:bg-blue-700 shadow-sm"
                 >
                   Add
                 </button>
               </form>
             </div>
 
-            <div className="flex items-center justify-between pt-3 border-t border-slate-200 dark:border-slate-800">
+            <div className={`flex items-center justify-between pt-3 border-t ${darkMode ? 'border-slate-800' : 'border-slate-200'}`}>
               <button
                 onClick={() => moveToTrash(selectedTask.id)}
-                className="flex items-center gap-1.5 text-xs text-rose-500 hover:underline"
+                className="flex items-center gap-1.5 text-xs font-semibold text-rose-600 hover:underline"
               >
                 <Trash2 className="w-3.5 h-3.5" />
                 <span>Move to Trash</span>
               </button>
               <button
                 onClick={() => setSelectedTask(null)}
-                className="px-4 py-1.5 rounded-lg text-xs font-medium bg-slate-200 dark:bg-slate-800"
+                className={`px-4 py-1.5 rounded-lg text-xs font-semibold border ${
+                  darkMode ? 'bg-slate-800 border-slate-700 text-slate-200' : 'bg-slate-100 border-slate-300 text-slate-800'
+                }`}
               >
                 Close
               </button>
